@@ -1,0 +1,59 @@
+# ─── Stage 1: Builder ───────────────────────────────────────────
+FROM python:3.12-slim AS builder
+
+WORKDIR /build
+
+# Install compilers needed for some packages
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.prod.txt .
+RUN pip install --no-cache-dir --prefix=/install -r requirements.prod.txt
+
+
+# ─── Stage 2: Production image ──────────────────────────────────
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# Runtime system deps only (no gcc needed here)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq5 \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy installed packages from builder
+COPY --from=builder /install /usr/local
+
+# Create non-root user for security
+RUN groupadd -r xpenza && useradd -r -g xpenza xpenza
+
+# Copy application source
+COPY --chown=xpenza:xpenza . .
+
+# Remove dev/test files from image
+RUN rm -rf tests/ .pytest_cache/ .venv/ .env .env.*
+
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV ENVIRONMENT=production
+
+USER xpenza
+
+EXPOSE 8000
+
+# Health check so Docker knows when the app is ready
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+# Production: gunicorn manages multiple uvicorn workers
+CMD ["gunicorn", "app.main:app", \
+     "--worker-class", "uvicorn.workers.UvicornWorker", \
+     "--workers", "4", \
+     "--bind", "0.0.0.0:8000", \
+     "--timeout", "120", \
+     "--keepalive", "5", \
+     "--access-logfile", "-", \
+     "--error-logfile", "-"]

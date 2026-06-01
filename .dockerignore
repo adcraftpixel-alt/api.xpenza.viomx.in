@@ -1,0 +1,47 @@
+# Version control
+.git
+.gitignore
+
+# Python cache
+__pycache__
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.so
+
+# Virtual environment
+.venv
+venv
+env
+ENV
+
+# Test & dev
+tests/
+pytest.ini
+.pytest_cache
+.coverage
+coverage.xml
+htmlcov/
+.mypy_cache/
+
+# IDE & OS
+.vscode
+.idea
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Docs
+*.md
+docs/
+
+# Local env files (never copy secrets into image)
+.env
+.env.*
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
