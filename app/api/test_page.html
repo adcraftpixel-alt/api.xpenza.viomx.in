@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Finance OS — API Tester</title>
+<style>
+  :root {
+    --bg: #0f1117; --sidebar: #161b27; --card: #1e2435; --border: #2a3045;
+    --text: #e2e8f0; --muted: #8892a4; --accent: #6366f1;
+    --green: #22c55e; --blue: #3b82f6; --orange: #f97316; --red: #ef4444;
+    --yellow: #eab308; --purple: #a855f7;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; background: var(--bg); color: var(--text); display: flex; height: 100vh; overflow: hidden; font-size: 13px; }
+
+  /* SIDEBAR */
+  #sidebar { width: 220px; min-width: 220px; background: var(--sidebar); border-right: 1px solid var(--border); overflow-y: auto; display: flex; flex-direction: column; }
+  #sidebar .logo { padding: 18px 16px 14px; font-size: 14px; font-weight: 700; color: var(--accent); border-bottom: 1px solid var(--border); letter-spacing: 0.3px; }
+  #sidebar .logo span { color: var(--muted); font-weight: 400; font-size: 11px; display: block; margin-top: 2px; }
+  .nav-group { padding: 6px 0; border-bottom: 1px solid var(--border); }
+  .nav-group-label { padding: 8px 16px 4px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); }
+  .nav-item { padding: 7px 16px; cursor: pointer; color: var(--muted); transition: all 0.15s; border-left: 3px solid transparent; font-size: 12px; }
+  .nav-item:hover { background: rgba(99,102,241,0.08); color: var(--text); }
+  .nav-item.active { background: rgba(99,102,241,0.12); color: var(--accent); border-left-color: var(--accent); }
+  .nav-count { float: right; background: var(--border); border-radius: 10px; padding: 1px 6px; font-size: 10px; }
+
+  /* MAIN */
+  #main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+
+  /* TOP BAR */
+  #topbar { background: var(--card); border-bottom: 1px solid var(--border); padding: 12px 20px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  #topbar label { font-size: 11px; color: var(--muted); white-space: nowrap; }
+  #topbar input { background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 6px 10px; border-radius: 6px; font-size: 12px; outline: none; }
+  #topbar input:focus { border-color: var(--accent); }
+  #base-url { width: 220px; }
+  #token-input { width: 280px; font-family: monospace; font-size: 11px; }
+  .btn { padding: 6px 14px; border-radius: 6px; border: none; cursor: pointer; font-size: 12px; font-weight: 600; transition: opacity 0.15s; }
+  .btn:hover { opacity: 0.85; }
+  .btn-accent { background: var(--accent); color: #fff; }
+  .btn-sm { padding: 4px 10px; font-size: 11px; }
+  #token-status { font-size: 11px; color: var(--green); }
+
+  /* CONTENT */
+  #content { flex: 1; overflow-y: auto; padding: 20px; }
+  .section { margin-bottom: 24px; }
+  .section-header { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; cursor: pointer; user-select: none; }
+  .section-title { font-size: 14px; font-weight: 700; color: var(--text); }
+  .section-toggle { color: var(--muted); font-size: 16px; transition: transform 0.2s; }
+  .section.collapsed .section-toggle { transform: rotate(-90deg); }
+  .section.collapsed .endpoint-list { display: none; }
+  .endpoint-list { display: flex; flex-direction: column; gap: 6px; }
+
+  /* ENDPOINT ROW */
+  .endpoint { background: var(--card); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; transition: border-color 0.15s; }
+  .endpoint:hover { border-color: #3a4060; }
+  .endpoint.open { border-color: var(--accent); }
+  .endpoint-row { display: flex; align-items: center; gap: 10px; padding: 10px 14px; cursor: pointer; }
+  .method { font-size: 10px; font-weight: 800; padding: 2px 8px; border-radius: 4px; min-width: 52px; text-align: center; text-transform: uppercase; letter-spacing: 0.5px; }
+  .GET    { background: rgba(34,197,94,0.15);  color: var(--green); }
+  .POST   { background: rgba(59,130,246,0.15); color: var(--blue); }
+  .PUT    { background: rgba(249,115,22,0.15); color: var(--orange); }
+  .PATCH  { background: rgba(234,179,8,0.15);  color: var(--yellow); }
+  .DELETE { background: rgba(239,68,68,0.15);  color: var(--red); }
+  .endpoint-path { font-family: monospace; font-size: 12px; color: var(--text); flex: 1; }
+  .endpoint-desc { font-size: 11px; color: var(--muted); flex: 2; }
+  .btn-test { background: rgba(99,102,241,0.15); color: var(--accent); border: 1px solid rgba(99,102,241,0.3); }
+  .btn-test:hover { background: rgba(99,102,241,0.25); }
+
+  /* TEST PANEL */
+  .test-panel { padding: 14px 16px; border-top: 1px solid var(--border); background: rgba(0,0,0,0.2); }
+  .test-panel label { font-size: 11px; color: var(--muted); display: block; margin-bottom: 4px; margin-top: 10px; }
+  .test-panel label:first-child { margin-top: 0; }
+  .test-panel input, .test-panel textarea, .test-panel select {
+    width: 100%; background: var(--bg); border: 1px solid var(--border); color: var(--text);
+    padding: 7px 10px; border-radius: 6px; font-size: 12px; outline: none; font-family: monospace;
+  }
+  .test-panel input:focus, .test-panel textarea:focus { border-color: var(--accent); }
+  .test-panel textarea { resize: vertical; min-height: 80px; }
+  .test-actions { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+  .btn-send { background: var(--accent); color: #fff; }
+  .spinner { display: none; width: 16px; height: 16px; border: 2px solid rgba(255,255,255,0.2); border-top-color: #fff; border-radius: 50%; animation: spin 0.6s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .response-box { margin-top: 12px; }
+  .response-meta { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+  .status-badge { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 4px; }
+  .status-ok   { background: rgba(34,197,94,0.15); color: var(--green); }
+  .status-err  { background: rgba(239,68,68,0.15); color: var(--red); }
+  .status-warn { background: rgba(249,115,22,0.15); color: var(--orange); }
+  .response-time { font-size: 11px; color: var(--muted); }
+  .btn-copy { background: var(--border); color: var(--muted); }
+  pre.response-json { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 12px; font-size: 11px; line-height: 1.6; overflow-x: auto; max-height: 300px; overflow-y: auto; white-space: pre-wrap; word-break: break-word; }
+  .json-key    { color: #93c5fd; }
+  .json-string { color: #86efac; }
+  .json-number { color: #fde68a; }
+  .json-bool   { color: #f9a8d4; }
+  .json-null   { color: var(--muted); }
+
+  /* TOAST */
+  #toast-container { position: fixed; bottom: 20px; right: 20px; display: flex; flex-direction: column; gap: 8px; z-index: 9999; }
+  .toast { padding: 10px 16px; border-radius: 8px; font-size: 12px; font-weight: 600; animation: slideIn 0.2s ease; box-shadow: 0 4px 20px rgba(0,0,0,0.4); }
+  .toast-success { background: #14532d; color: var(--green); border: 1px solid rgba(34,197,94,0.3); }
+  .toast-error   { background: #450a0a; color: var(--red); border: 1px solid rgba(239,68,68,0.3); }
+  .toast-info    { background: #1e1b4b; color: var(--accent); border: 1px solid rgba(99,102,241,0.3); }
+  @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+
+  #content::-webkit-scrollbar, #sidebar::-webkit-scrollbar { width: 5px; }
+  #content::-webkit-scrollbar-track, #sidebar::-webkit-scrollbar-track { background: transparent; }
+  #content::-webkit-scrollbar-thumb, #sidebar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<nav id="sidebar">
+  <div class="logo">AI Finance OS <span>API Tester v1.0</span></div>
+  <div id="nav-links"></div>
+</nav>
+
+<div id="main">
+  <div id="topbar">
+    <label>Base URL</label>
+    <input id="base-url" type="text" value="http://localhost:8000/api/v1" placeholder="http://localhost:8000/api/v1">
+    <label>JWT Token</label>
+    <input id="token-input" type="password" placeholder="Paste Bearer token here…">
+    <button class="btn btn-accent btn-sm" onclick="saveToken()">Set Token</button>
+    <span id="token-status"></span>
+  </div>
+  <div id="content">
+    <div id="sections"></div>
+  </div>
+</div>
+
+<div id="toast-container"></div>
+
+<script>
+// ─── DATA ────────────────────────────────────────────────────────────────────
+const MODULES = [
+  { id: 'auth', label: 'Auth', endpoints: [
+    { method:'POST', path:'/auth/send-otp',       desc:'Send OTP to phone/email',          body:'{"email":"user@example.com"}' },
+    { method:'POST', path:'/auth/verify-otp',     desc:'Verify OTP and get JWT token',     body:'{"email":"user@example.com","otp":"123456"}' },
+    { method:'POST', path:'/auth/resend-otp',     desc:'Resend OTP',                       body:'{"email":"user@example.com"}' },
+    { method:'POST', path:'/auth/forgot-password',desc:'Request password reset OTP',       body:'{"email":"user@example.com"}' },
+    { method:'POST', path:'/auth/reset-password', desc:'Reset password with OTP',          body:'{"email":"user@example.com","otp":"123456","new_password":"NewPass123!"}' },
+    { method:'POST', path:'/auth/register',        desc:'Register user after OTP verify',  body:'{"email":"user@example.com","name":"John Doe","password":"Pass123!","phone":"+919876543210"}' },
+  ]},
+  { id: 'users', label: 'Users', endpoints: [
+    { method:'GET',   path:'/users/me',                  desc:'Get current user profile' },
+    { method:'PUT',   path:'/users/me',                  desc:'Update user profile',         body:'{"name":"John Doe","monthly_income":50000,"currency":"INR"}' },
+    { method:'DELETE',path:'/users/me',                  desc:'Delete account' },
+    { method:'GET',   path:'/users/preferences',         desc:'Get user preferences' },
+    { method:'PUT',   path:'/users/preferences',         desc:'Update preferences',          body:'{"notification_frequency":"daily","ai_insights_enabled":true,"theme":"dark"}' },
+    { method:'GET',   path:'/users/onboarding/status',   desc:'Get onboarding completion status' },
+    { method:'POST',  path:'/users/me/avatar',           desc:'Upload avatar (multipart)' },
+  ]},
+  { id: 'expenses', label: 'Expenses', endpoints: [
+    { method:'GET',  path:'/expenses',          desc:'List expenses',               params:'page=1&limit=20&category_id=&start_date=&end_date=' },
+    { method:'POST', path:'/expenses',          desc:'Create expense',              body:'{"amount":500,"description":"Groceries","category_id":"","payment_method":"upi","expense_date":"2026-05-29","merchant":"BigBasket"}' },
+    { method:'GET',  path:'/expenses/{id}',     desc:'Get expense by ID',           params:'id=<expense-uuid>' },
+    { method:'PUT',  path:'/expenses/{id}',     desc:'Update expense',              params:'id=<expense-uuid>', body:'{"amount":600,"description":"Updated"}' },
+    { method:'DELETE',path:'/expenses/{id}',    desc:'Delete expense',              params:'id=<expense-uuid>' },
+    { method:'GET',  path:'/expenses/summary',  desc:'Expense summary stats' },
+    { method:'GET',  path:'/expenses/search',   desc:'Search expenses',             params:'q=groceries&limit=20' },
+    { method:'POST', path:'/expenses/quick-parse',desc:'AI-parse natural language', body:'{"text":"spent 200 on food yesterday"}' },
+  ]},
+  { id: 'budgets', label: 'Budgets', endpoints: [
+    { method:'GET',  path:'/budgets',             desc:'List all budgets' },
+    { method:'POST', path:'/budgets',             desc:'Create budget',              body:'{"name":"Food Budget","amount":5000,"period":"monthly","category_id":"","start_date":"2026-05-01","alert_threshold":80}' },
+    { method:'GET',  path:'/budgets/{id}',        desc:'Get budget by ID',           params:'id=<budget-uuid>' },
+    { method:'PUT',  path:'/budgets/{id}',        desc:'Update budget',              params:'id=<budget-uuid>', body:'{"amount":6000}' },
+    { method:'DELETE',path:'/budgets/{id}',       desc:'Delete budget',              params:'id=<budget-uuid>' },
+    { method:'GET',  path:'/budgets/summary',     desc:'Budget usage summary' },
+    { method:'GET',  path:'/budgets/alerts',      desc:'Budgets near/over threshold' },
+    { method:'POST', path:'/budgets/recalculate', desc:'Recalculate budget spending' },
+  ]},
+  { id: 'categories', label: 'Categories', endpoints: [
+    { method:'GET',   path:'/categories',      desc:'List all categories' },
+    { method:'POST',  path:'/categories',      desc:'Create category',    body:'{"name":"Travel","icon":"airplane","color":"#6366f1"}' },
+    { method:'PUT',   path:'/categories/{id}', desc:'Update category',   params:'id=<uuid>', body:'{"name":"Travel & Transport"}' },
+    { method:'DELETE',path:'/categories/{id}', desc:'Delete category',   params:'id=<uuid>' },
+  ]},
+  { id: 'wallets', label: 'Wallets', endpoints: [
+    { method:'GET',  path:'/wallets',                    desc:'List wallets' },
+    { method:'POST', path:'/wallets',                    desc:'Create wallet',          body:'{"name":"HDFC Savings","type":"bank","balance":25000,"currency":"INR"}' },
+    { method:'GET',  path:'/wallets/summary',            desc:'Wallet balance summary' },
+    { method:'GET',  path:'/wallets/{id}',               desc:'Get wallet details',     params:'id=<uuid>' },
+    { method:'PUT',  path:'/wallets/{id}',               desc:'Update wallet',          params:'id=<uuid>', body:'{"name":"HDFC Primary"}' },
+    { method:'DELETE',path:'/wallets/{id}',              desc:'Delete wallet',          params:'id=<uuid>' },
+    { method:'GET',  path:'/wallets/{id}/transactions',  desc:'Wallet transactions',    params:'id=<uuid>' },
+  ]},
+  { id: 'analytics', label: 'Analytics', endpoints: [
+    { method:'GET', path:'/analytics/monthly', desc:'Monthly analytics data', params:'year=2026&month=5' },
+  ]},
+  { id: 'ai', label: 'AI', endpoints: [
+    { method:'GET',  path:'/ai/insights',            desc:'Get AI-generated insights' },
+    { method:'GET',  path:'/ai/savings-advice',      desc:'Personalised savings advice' },
+    { method:'GET',  path:'/ai/health-score',        desc:'Financial health score' },
+    { method:'GET',  path:'/ai/predictions',         desc:'Spending predictions' },
+    { method:'POST', path:'/ai/chat',                desc:'Chat with AI assistant',     body:'{"message":"How can I save more money?","context":{}}' },
+    { method:'GET',  path:'/ai/chat/history',        desc:'Get AI chat history',        params:'limit=20' },
+    { method:'GET',  path:'/ai/subscription-detect', desc:'Detect subscriptions from expenses' },
+  ]},
+  { id: 'savings', label: 'Savings Goals', endpoints: [
+    { method:'GET',   path:'/savings-goals',      desc:'List savings goals' },
+    { method:'POST',  path:'/savings-goals',      desc:'Create savings goal',  body:'{"name":"Emergency Fund","target_amount":100000,"target_date":"2026-12-31"}' },
+    { method:'GET',   path:'/savings-goals/{id}', desc:'Get savings goal',    params:'id=<uuid>' },
+    { method:'PUT',   path:'/savings-goals/{id}', desc:'Update savings goal', params:'id=<uuid>', body:'{"current_amount":15000}' },
+    { method:'DELETE',path:'/savings-goals/{id}', desc:'Delete savings goal', params:'id=<uuid>' },
+  ]},
+  { id: 'subscriptions', label: 'Subscriptions', endpoints: [
+    { method:'GET',   path:'/subscriptions',          desc:'List tracked subscriptions' },
+    { method:'POST',  path:'/subscriptions',          desc:'Add subscription',          body:'{"name":"Netflix","amount":649,"billing_cycle":"monthly","next_renewal":"2026-06-15","category":"Entertainment"}' },
+    { method:'GET',   path:'/subscriptions/renewals', desc:'Upcoming renewals' },
+    { method:'GET',   path:'/subscriptions/total',    desc:'Total subscription spend' },
+    { method:'GET',   path:'/subscriptions/{id}',     desc:'Get subscription details',  params:'id=<uuid>' },
+    { method:'PUT',   path:'/subscriptions/{id}',     desc:'Update subscription',       params:'id=<uuid>', body:'{"amount":799}' },
+    { method:'DELETE',path:'/subscriptions/{id}',     desc:'Delete subscription',       params:'id=<uuid>' },
+  ]},
+  { id: 'notifications', label: 'Notifications', endpoints: [
+    { method:'GET',  path:'/notifications',              desc:'List notifications',     params:'page=1&limit=20&is_read=' },
+    { method:'GET',  path:'/notifications/preferences',  desc:'Get notification prefs' },
+    { method:'PUT',  path:'/notifications/preferences',  desc:'Update notification prefs', body:'{"budget_alerts":true,"subscription_reminders":true,"ai_insights":true}' },
+    { method:'POST', path:'/notifications/read-all',     desc:'Mark all as read' },
+    { method:'PUT',  path:'/notifications/{id}/read',    desc:'Mark one as read',       params:'id=<uuid>' },
+    { method:'DELETE',path:'/notifications/{id}',        desc:'Delete notification',    params:'id=<uuid>' },
+  ]},
+  { id: 'reports', label: 'Reports', endpoints: [
+    { method:'GET',  path:'/reports/monthly', desc:'Monthly expense report',  params:'year=2026&month=5' },
+    { method:'GET',  path:'/reports/yearly',  desc:'Yearly expense report',   params:'year=2026' },
+    { method:'GET',  path:'/reports/tax',     desc:'Tax summary report',      params:'year=2026' },
+    { method:'POST', path:'/reports/export',  desc:'Export report',           body:'{"format":"pdf","type":"monthly","year":2026,"month":5}' },
+  ]},
+  { id: 'family', label: 'Family', endpoints: [
+    { method:'GET',  path:'/family/groups/me',  desc:'Get my family group' },
+    { method:'POST', path:'/family/invite',     desc:'Invite family member',   body:'{"email":"member@example.com","role":"member"}' },
+    { method:'GET',  path:'/family/members',    desc:'List family members' },
+    { method:'GET',  path:'/family/expenses',   desc:'Family shared expenses', params:'page=1&limit=20' },
+    { method:'GET',  path:'/family/budgets',    desc:'Family budgets' },
+  ]},
+  { id: 'billing', label: 'Billing', endpoints: [
+    { method:'GET',  path:'/billing/plans',        desc:'List available billing plans' },
+    { method:'GET',  path:'/billing/subscription', desc:'Get current subscription' },
+    { method:'POST', path:'/billing/checkout',     desc:'Create Stripe checkout session', body:'{"plan_id":"","billing_cycle":"monthly"}' },
+    { method:'PUT',  path:'/billing/subscription', desc:'Update/upgrade plan',            body:'{"plan_id":"","billing_cycle":"yearly"}' },
+    { method:'DELETE',path:'/billing/subscription',desc:'Cancel subscription' },
+    { method:'GET',  path:'/billing/invoices',     desc:'List billing invoices' },
+  ]},
+];
+
+// ─── STATE ───────────────────────────────────────────────────────────────────
+let token = localStorage.getItem('af_token') || '';
+let openPanel = null;
+
+// ─── INIT ────────────────────────────────────────────────────────────────────
+window.addEventListener('DOMContentLoaded', () => {
+  if (token) {
+    document.getElementById('token-input').value = token;
+    document.getElementById('token-status').textContent = 'Token set';
+  }
+  renderNav();
+  renderSections();
+});
+
+function saveToken() {
+  token = document.getElementById('token-input').value.trim();
+  localStorage.setItem('af_token', token);
+  const el = document.getElementById('token-status');
+  el.textContent = token ? 'Token saved' : 'Token cleared';
+  setTimeout(() => { el.textContent = token ? 'Token set' : ''; }, 2000);
+  toast('Token saved to localStorage', 'success');
+}
+
+// ─── RENDER NAV ──────────────────────────────────────────────────────────────
+function renderNav() {
+  const nav = document.getElementById('nav-links');
+  nav.innerHTML = MODULES.map(m => `
+    <div class="nav-group">
+      <div class="nav-group-label">${m.label}</div>
+      <div class="nav-item" onclick="scrollTo('${m.id}')" id="nav-${m.id}">
+        ${m.label} <span class="nav-count">${m.endpoints.length}</span>
+      </div>
+    </div>
+  `).join('');
+}
+
+function scrollTo(id) {
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  document.getElementById('nav-'+id)?.classList.add('active');
+  document.getElementById('section-'+id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+// ─── RENDER SECTIONS ─────────────────────────────────────────────────────────
+function renderSections() {
+  const container = document.getElementById('sections');
+  container.innerHTML = MODULES.map(m => `
+    <div class="section" id="section-${m.id}">
+      <div class="section-header" onclick="toggleSection('${m.id}')">
+        <span class="section-toggle" id="toggle-${m.id}">▾</span>
+        <span class="section-title">${m.label}</span>
+        <span style="font-size:11px;color:var(--muted);margin-left:4px">${m.endpoints.length} endpoints</span>
+      </div>
+      <div class="endpoint-list">
+        ${m.endpoints.map((ep, i) => renderEndpoint(m.id, i, ep)).join('')}
+      </div>
+    </div>
+  `).join('');
+}
+
+function renderEndpoint(moduleId, idx, ep) {
+  const id = `ep-${moduleId}-${idx}`;
+  const defaultBody = ep.body ? ep.body : '{}';
+  const defaultParams = ep.params || '';
+  const needsBody = ['POST','PUT','PATCH'].includes(ep.method);
+  return `
+    <div class="endpoint" id="${id}">
+      <div class="endpoint-row" onclick="togglePanel('${id}')">
+        <span class="method ${ep.method}">${ep.method}</span>
+        <span class="endpoint-path">${ep.path}</span>
+        <span class="endpoint-desc">${ep.desc}</span>
+        <button class="btn btn-test btn-sm" onclick="event.stopPropagation();openTestPanel('${id}')">Test</button>
+      </div>
+      <div class="test-panel" id="panel-${id}" style="display:none">
+        <label>Path (replace {id} with actual UUID)</label>
+        <input type="text" id="path-${id}" value="${ep.path}" placeholder="${ep.path}">
+        <label>Query Params (key=val&key2=val2)</label>
+        <input type="text" id="params-${id}" value="${defaultParams}" placeholder="page=1&limit=20">
+        ${needsBody ? `<label>Request Body (JSON)</label><textarea id="body-${id}">${defaultBody}</textarea>` : ''}
+        <div class="test-actions">
+          <button class="btn btn-send btn-sm" onclick="sendRequest('${id}','${ep.method}')">Send Request</button>
+          <div class="spinner" id="spinner-${id}"></div>
+          <span id="err-${id}" style="font-size:11px;color:var(--red)"></span>
+        </div>
+        <div id="response-${id}"></div>
+      </div>
+    </div>
+  `;
+}
+
+function toggleSection(id) {
+  const sec = document.getElementById('section-'+id);
+  sec.classList.toggle('collapsed');
+}
+
+function togglePanel(id) {
+  const panel = document.getElementById('panel-'+id);
+  const ep = document.getElementById(id);
+  const isOpen = panel.style.display !== 'none';
+  panel.style.display = isOpen ? 'none' : 'block';
+  ep.classList.toggle('open', !isOpen);
+}
+
+function openTestPanel(id) {
+  const panel = document.getElementById('panel-'+id);
+  const ep = document.getElementById(id);
+  panel.style.display = 'block';
+  ep.classList.add('open');
+  panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+// ─── SEND REQUEST ────────────────────────────────────────────────────────────
+async function sendRequest(id, method) {
+  const baseUrl  = document.getElementById('base-url').value.replace(/\/$/, '');
+  const pathEl   = document.getElementById('path-'+id);
+  const paramsEl = document.getElementById('params-'+id);
+  const bodyEl   = document.getElementById('body-'+id);
+  const spinner  = document.getElementById('spinner-'+id);
+  const errEl    = document.getElementById('err-'+id);
+  const resEl    = document.getElementById('response-'+id);
+
+  let path    = pathEl ? pathEl.value.trim() : '';
+  let params  = paramsEl ? paramsEl.value.trim() : '';
+  let bodyRaw = bodyEl ? bodyEl.value.trim() : '';
+
+  errEl.textContent = '';
+  spinner.style.display = 'inline-block';
+  resEl.innerHTML = '';
+
+  let url = baseUrl + path;
+  if (params) url += '?' + params;
+
+  const headers = { 'Content-Type': 'application/json' };
+  if (token) headers['Authorization'] = 'Bearer ' + token;
+
+  let fetchOptions = { method, headers };
+  if (['POST','PUT','PATCH'].includes(method) && bodyRaw) {
+    try { JSON.parse(bodyRaw); } catch(e) { errEl.textContent = 'Invalid JSON body'; spinner.style.display='none'; return; }
+    fetchOptions.body = bodyRaw;
+  }
+
+  const t0 = Date.now();
+  try {
+    const resp = await fetch(url, fetchOptions);
+    const ms   = Date.now() - t0;
+    let data;
+    const ct = resp.headers.get('content-type') || '';
+    if (ct.includes('application/json')) {
+      data = await resp.json();
+    } else {
+      data = await resp.text();
+    }
+    spinner.style.display = 'none';
+    renderResponse(resEl, resp.status, ms, data);
+    const ok = resp.status >= 200 && resp.status < 300;
+    toast(`${method} ${path} — ${resp.status} ${ok ? 'OK' : 'Error'}`, ok ? 'success' : 'error');
+  } catch(err) {
+    spinner.style.display = 'none';
+    errEl.textContent = err.message;
+    toast('Request failed: ' + err.message, 'error');
+  }
+}
+
+function renderResponse(container, status, ms, data) {
+  const cls = status < 300 ? 'status-ok' : status < 500 ? 'status-warn' : 'status-err';
+  const jsonStr = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
+  const highlighted = syntaxHighlight(jsonStr);
+  container.innerHTML = `
+    <div class="response-box">
+      <div class="response-meta">
+        <span class="status-badge ${cls}">${status}</span>
+        <span class="response-time">${ms}ms</span>
+        <button class="btn btn-copy btn-sm" onclick="copyResponse(this)">Copy</button>
+      </div>
+      <pre class="response-json" data-raw="${escAttr(jsonStr)}">${highlighted}</pre>
+    </div>`;
+}
+
+function copyResponse(btn) {
+  const pre = btn.closest('.response-box').querySelector('pre');
+  navigator.clipboard.writeText(pre.dataset.raw || pre.textContent).then(() => {
+    toast('Response copied', 'info');
+  });
+}
+
+function escAttr(s) { return s.replace(/"/g, '&quot;').replace(/</g, '&lt;'); }
+
+function syntaxHighlight(json) {
+  return json
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g, match => {
+      if (/^"/.test(match)) {
+        return /:$/.test(match)
+          ? `<span class="json-key">${match}</span>`
+          : `<span class="json-string">${match}</span>`;
+      }
+      if (/true|false/.test(match)) return `<span class="json-bool">${match}</span>`;
+      if (/null/.test(match))       return `<span class="json-null">${match}</span>`;
+      return `<span class="json-number">${match}</span>`;
+    });
+}
+
+// ─── TOAST ───────────────────────────────────────────────────────────────────
+function toast(msg, type='info') {
+  const c = document.getElementById('toast-container');
+  const t = document.createElement('div');
+  t.className = `toast toast-${type}`;
+  t.textContent = msg;
+  c.appendChild(t);
+  setTimeout(() => t.remove(), 3000);
+}
+
+// ─── SCROLL SPY ──────────────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  const content = document.getElementById('content');
+  content.addEventListener('scroll', () => {
+    for (const m of MODULES) {
+      const el = document.getElementById('section-'+m.id);
+      if (!el) continue;
+      const rect = el.getBoundingClientRect();
+      if (rect.top >= 0 && rect.top < 300) {
+        document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+        document.getElementById('nav-'+m.id)?.classList.add('active');
+        break;
+      }
+    }
+  });
+});
+</script>
+</body>
+</html>
