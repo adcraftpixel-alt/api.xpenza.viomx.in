@@ -1,16 +1,16 @@
-from typing import List
+from typing import List, Optional
 from datetime import date
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, extract
 from app.models.budget import Budget
 from app.models.expense import Expense
 from app.core.exceptions import NotFoundError, ForbiddenError
 from app.api.v1.budgets.schemas import CreateBudgetRequest, UpdateBudgetRequest
 
 
-def _budget_to_dict(b: Budget) -> dict:
+def _budget_to_dict(b: Budget, spent_override: Optional[float] = None) -> dict:
     amount = float(b.amount)
-    spent = float(b.spent)
+    spent = spent_override if spent_override is not None else float(b.spent)
     percent = round((spent / amount * 100), 2) if amount > 0 else 0
     return {
         "id": str(b.id),
@@ -68,9 +68,42 @@ class BudgetService:
         db.refresh(budget)
         return _budget_to_dict(budget)
 
-    def list(self, db: Session, user_id: str) -> List[dict]:
-        budgets = db.query(Budget).filter(Budget.user_id == user_id).order_by(Budget.start_date.desc()).all()
+    def list(self, db: Session, user_id: str,
+             month: Optional[int] = None, year: Optional[int] = None) -> List[dict]:
+        budgets = db.query(Budget).filter(
+            Budget.user_id == user_id
+        ).order_by(Budget.start_date.desc()).all()
+
+        if month is not None and year is not None:
+            # Calculate spent only for the requested month
+            return [_budget_to_dict(b, self._spent_for_month(b, db, month, year)) for b in budgets]
         return [_budget_to_dict(b) for b in budgets]
+
+    def _spent_for_month(self, b: Budget, db: Session, month: int, year: int) -> float:
+        """Calculate how much was spent against this budget in a specific month."""
+        from sqlalchemy import or_
+        query = db.query(func.sum(Expense.amount)).filter(
+            Expense.user_id == b.user_id,
+            extract('year', Expense.expense_date) == year,
+            extract('month', Expense.expense_date) == month,
+        )
+        if b.category_id:
+            query = query.filter(Expense.category_id == b.category_id)
+        else:
+            budget_name_lower = (b.name or '').lower()
+            keywords = None
+            for key, kw_list in self._BUDGET_KEYWORDS.items():
+                if key in budget_name_lower or budget_name_lower in key:
+                    keywords = kw_list
+                    break
+            if not keywords:
+                return 0.0
+            conditions = []
+            for kw in keywords:
+                conditions.append(Expense.ai_category.ilike(f'%{kw}%'))
+                conditions.append(Expense.description.ilike(f'%{kw}%'))
+            query = query.filter(or_(*conditions))
+        return float(query.scalar() or 0)
 
     def get_by_id(self, db: Session, budget_id: str, user_id: str) -> dict:
         b = db.query(Budget).filter(Budget.id == budget_id).first()
