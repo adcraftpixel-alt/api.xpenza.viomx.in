@@ -1,5 +1,12 @@
 from fastapi import APIRouter, Depends, Query
 from typing import Optional
+from pydantic import BaseModel
+
+class MonthlyAmountRequest(BaseModel):
+    month: int
+    year: int
+    amount: float
+    update_future: bool = True
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.core.dependencies import get_current_active_user
@@ -70,6 +77,21 @@ def update_budget(
 ):
     budget = service.update(db, budget_id, str(current_user.id), data)
     return success(budget, message="Budget updated")
+
+
+@router.put("/{budget_id}/monthly")
+def set_monthly_amount(
+    budget_id: str,
+    data: MonthlyAmountRequest,
+    current_user=Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    """Set a month-specific budget amount. Propagates to future months by default."""
+    result = service.set_monthly_amount(
+        db, budget_id, str(current_user.id),
+        data.month, data.year, data.amount, data.update_future
+    )
+    return success(result, message="Budget amount updated for this month")
 
 
 @router.delete("/{budget_id}")

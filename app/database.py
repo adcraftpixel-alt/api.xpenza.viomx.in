@@ -27,6 +27,7 @@ def create_tables():
     from app.models import (  # noqa: F401
         user, user_preference, category, expense, budget,
         savings_goal, subscription, ai_insight, notification,
-        billing, payment_history, chat, ocr_scan, family_group, wallet
+        billing, payment_history, chat, ocr_scan, family_group, wallet,
+        budget_month_amount
     )
     Base.metadata.create_all(bind=engine)

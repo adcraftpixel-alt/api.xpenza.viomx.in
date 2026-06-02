@@ -8,16 +8,23 @@ from app.core.exceptions import NotFoundError, ForbiddenError
 from app.api.v1.budgets.schemas import CreateBudgetRequest, UpdateBudgetRequest
 
 
-def _budget_to_dict(b: Budget, spent_override: Optional[float] = None) -> dict:
-    amount = float(b.amount)
-    spent = spent_override if spent_override is not None else float(b.spent)
+def _budget_to_dict(b: Budget, spent_override: Optional[float] = None,
+                    amount_override: Optional[float] = None,
+                    month: Optional[int] = None, year: Optional[int] = None) -> dict:
+    amount = amount_override if amount_override is not None else float(b.amount)
+    spent  = spent_override  if spent_override  is not None else float(b.spent)
     percent = round((spent / amount * 100), 2) if amount > 0 else 0
+    now = __import__('datetime').datetime.utcnow()
+    is_past = False
+    if month and year:
+        is_past = (year < now.year) or (year == now.year and month < now.month)
     return {
         "id": str(b.id),
         "user_id": str(b.user_id),
         "category_id": str(b.category_id) if b.category_id else None,
         "name": b.name,
         "amount": amount,
+        "base_amount": float(b.amount),
         "spent": spent,
         "period": b.period,
         "start_date": str(b.start_date),
@@ -27,6 +34,9 @@ def _budget_to_dict(b: Budget, spent_override: Optional[float] = None) -> dict:
         "is_shared": b.is_shared,
         "family_group_id": str(b.family_group_id) if b.family_group_id else None,
         "percent_used": percent,
+        "month": month,
+        "year": year,
+        "is_past_month": is_past,
     }
 
 
@@ -70,14 +80,85 @@ class BudgetService:
 
     def list(self, db: Session, user_id: str,
              month: Optional[int] = None, year: Optional[int] = None) -> List[dict]:
+        from app.models.budget_month_amount import BudgetMonthAmount
         budgets = db.query(Budget).filter(
-            Budget.user_id == user_id
+            Budget.user_id == user_id,
+            Budget.is_active == True,
         ).order_by(Budget.start_date.desc()).all()
 
         if month is not None and year is not None:
-            # Calculate spent only for the requested month
-            return [_budget_to_dict(b, self._spent_for_month(b, db, month, year)) for b in budgets]
+            result = []
+            for b in budgets:
+                # Get month-specific amount override if exists
+                override = db.query(BudgetMonthAmount).filter(
+                    BudgetMonthAmount.budget_id == str(b.id),
+                    BudgetMonthAmount.month == month,
+                    BudgetMonthAmount.year == year,
+                ).first()
+                amt = float(override.amount) if override else None
+                spent = self._spent_for_month(b, db, month, year)
+                result.append(_budget_to_dict(b, spent, amt, month, year))
+            return result
         return [_budget_to_dict(b) for b in budgets]
+
+    def set_monthly_amount(self, db: Session, budget_id: str, user_id: str,
+                           month: int, year: int, amount: float,
+                           update_future: bool = True) -> dict:
+        """Set a month-specific budget amount. Optionally propagates to future months."""
+        from app.models.budget_month_amount import BudgetMonthAmount
+        import datetime
+
+        b = db.query(Budget).filter(Budget.id == budget_id).first()
+        if not b:
+            from app.core.exceptions import NotFoundError
+            raise NotFoundError("Budget not found")
+        if str(b.user_id) != str(user_id):
+            from app.core.exceptions import ForbiddenError
+            raise ForbiddenError("Access denied")
+
+        # Upsert for the requested month
+        existing = db.query(BudgetMonthAmount).filter(
+            BudgetMonthAmount.budget_id == budget_id,
+            BudgetMonthAmount.month == month,
+            BudgetMonthAmount.year == year,
+        ).first()
+        if existing:
+            existing.amount = amount
+        else:
+            db.add(BudgetMonthAmount(
+                budget_id=budget_id, month=month, year=year, amount=amount
+            ))
+
+        # Propagate to future months (next 12 months) if requested
+        if update_future:
+            now = datetime.datetime.utcnow()
+            for i in range(1, 13):
+                future_month = month + i
+                future_year  = year
+                if future_month > 12:
+                    future_month -= 12
+                    future_year  += 1
+                # Only update if this future month doesn't already have a custom override
+                # AND is not in the past
+                if future_year < now.year or (future_year == now.year and future_month < now.month):
+                    continue
+                fut = db.query(BudgetMonthAmount).filter(
+                    BudgetMonthAmount.budget_id == budget_id,
+                    BudgetMonthAmount.month == future_month,
+                    BudgetMonthAmount.year == future_year,
+                ).first()
+                if fut:
+                    fut.amount = amount
+                else:
+                    db.add(BudgetMonthAmount(
+                        budget_id=budget_id,
+                        month=future_month, year=future_year, amount=amount,
+                    ))
+
+        # Also update base budget amount for future reference
+        b.amount = amount
+        db.commit()
+        return _budget_to_dict(b, None, amount, month, year)
 
     def _spent_for_month(self, b: Budget, db: Session, month: int, year: int) -> float:
         """Calculate how much was spent against this budget in a specific month."""
