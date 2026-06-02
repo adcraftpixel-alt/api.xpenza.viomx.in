@@ -22,7 +22,9 @@ def get_monthly(
     If months == 1: returns detailed single-month breakdown.
     """
     now = datetime.utcnow()
-    if months >= 1:
+    # If month param given OR months==1 with no explicit month, use single-month detail
+    # Only return list when months > 1 (for dashboard trend chips)
+    if months > 1 and month is None:
         from sqlalchemy import extract, func
         from app.models.expense import Expense
         result = []
