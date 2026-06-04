@@ -10,6 +10,7 @@ from app.api.v1.expenses.schemas import CreateExpenseRequest, UpdateExpenseReque
 from app.api.v1.expenses.service import ExpenseService
 from app.api.v1.expenses.sms_parser import sms_parser
 from app.api.v1.expenses.quick_parser import parse_quick_text
+from app.api.v1.expenses.ai_categorizer import suggest_category
 from app.utils.response import success
 
 
@@ -19,6 +20,10 @@ class ParseSMSRequest(BaseModel):
 
 class QuickParseRequest(BaseModel):
     text: str  # e.g. "250/- sugar, 50/- snacks"
+
+
+class SuggestCategoryRequest(BaseModel):
+    description: str  # expense description in any language
 
 
 class QuickAddItem(BaseModel):
@@ -100,32 +105,74 @@ def quick_parse(
     return success(items, message=f"Parsed {len(items)} item(s)")
 
 
+@router.post("/suggest-category")
+def suggest_expense_category(
+    request: SuggestCategoryRequest,
+    current_user=Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Suggest the best matching category for an expense description in any language.
+
+    Works with Hindi, Punjabi, Hinglish, English, or any mix.
+    Matches against the user's own custom categories (not hardcoded names).
+
+    Examples:
+      "bijli ka bill"      → your Bills & Utilities category
+      "doodh liya"         → your Groceries category
+      "doctor ke paas gaya"→ your Health category
+      "kiraya diya"        → your House Rent / EMI category
+      "SIP kati aaj"       → your Investments category
+    """
+    result = suggest_category(request.description, str(current_user.id), db)
+    return success(result)
+
+
 _GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 _GROQ_MODEL = "llama-3.1-8b-instant"
-
-_GROQ_SYSTEM = (
-    "You are an expense parser for an Indian expense app. "
-    "Parse spoken or typed text into individual expense items. "
-    "Return ONLY a raw JSON array — no markdown, no explanation. "
-    "Format: [{\"amount\": 10.0, \"description\": \"Milk\", \"category\": \"Groceries\"}] "
-    "Valid categories (use exactly one): "
-    "Groceries, Food & Dining, Transport, Shopping, Bills & Utilities, "
-    "Health, Entertainment, Personal Care, Education, Others. "
-    "Rules: extract every item+amount pair; ignore filler words like 'and','well','also'; "
-    "amounts can be written as 'Rs 10', 'Rs. 50', '₹100', '150 rupees', or just a number before an item; "
-    "description should be title-case and concise (1-3 words); "
-    "if amount is 0 or unclear skip that item."
-)
 
 
 @router.post("/ai-parse")
 def ai_parse_expenses(
     request: QuickParseRequest,
     current_user=Depends(get_current_active_user),
+    db: Session = Depends(get_db),
 ):
-    """Use Groq LLM to parse conversational speech into structured expense items."""
+    """
+    Use Groq LLM to parse conversational speech (any language) into structured
+    expense items, matched against the user's real custom categories.
+    """
     import json
     import httpx
+    from app.models.category import Category as CategoryModel
+
+    # Fetch user's real category names for the prompt
+    user_cats = (
+        db.query(CategoryModel)
+        .filter(CategoryModel.user_id == current_user.id, CategoryModel.parent_id.is_(None))
+        .all()
+    )
+    cat_names = [c.name for c in user_cats] or [
+        "Groceries", "Food & Dining", "Transport", "Shopping",
+        "Bills & Utilities", "Health", "Entertainment", "Others",
+    ]
+    cat_list_str = ", ".join(cat_names)
+
+    system_prompt = (
+        "You are a multilingual expense parser for an Indian finance app. "
+        "Parse spoken or typed text (Hindi, Punjabi, Hinglish, English, or any mix) "
+        "into individual expense items. "
+        "Return ONLY a raw JSON array — no markdown, no explanation. "
+        f"Format: [{{\"amount\": 10.0, \"description\": \"Milk\", \"category\": \"Groceries\"}}] "
+        f"Valid categories (use exactly one): {cat_list_str}. "
+        "Rules: "
+        "- Understand Hindi/Punjabi: 'doodh'=milk, 'chai'=tea, 'petrol'=fuel, 'dawai'=medicine, "
+        "'kiraya'=rent, 'bijli'=electricity, 'kapde'=clothes, 'khana'=food; "
+        "- Extract every item+amount pair; ignore filler words; "
+        "- Amounts: 'Rs 10', '₹100', '150 rupees', or number before/after item name; "
+        "- Description: title-case, concise (1-3 words in English); "
+        "- Skip items with 0 or unclear amount."
+    )
 
     try:
         with httpx.Client(timeout=12.0) as client:
@@ -138,7 +185,7 @@ def ai_parse_expenses(
                 json={
                     "model": _GROQ_MODEL,
                     "messages": [
-                        {"role": "system", "content": _GROQ_SYSTEM},
+                        {"role": "system", "content": system_prompt},
                         {"role": "user", "content": f"Parse: {request.text}"},
                     ],
                     "temperature": 0.1,
@@ -148,7 +195,6 @@ def ai_parse_expenses(
             resp.raise_for_status()
             raw = resp.json()["choices"][0]["message"]["content"].strip()
 
-        # Extract JSON array (model may wrap in markdown fences)
         start = raw.find('[')
         end = raw.rfind(']') + 1
         if start < 0 or end <= start:
@@ -159,11 +205,20 @@ def ai_parse_expenses(
         for item in parsed:
             if not isinstance(item, dict):
                 continue
-            amt = float(item.get("amount") or 0)
+            amt  = float(item.get("amount") or 0)
             desc = str(item.get("description") or "").strip()
-            cat = str(item.get("category") or "Others").strip()
+            cat  = str(item.get("category") or cat_names[0]).strip()
             if amt > 0 and desc:
-                items.append({"amount": amt, "description": desc, "category": cat})
+                # Attach real category_id by name lookup
+                matched = next(
+                    (c for c in user_cats if c.name.lower() == cat.lower()), None
+                )
+                items.append({
+                    "amount":      amt,
+                    "description": desc,
+                    "category":    cat,
+                    "category_id": str(matched.id) if matched else None,
+                })
 
         if items:
             return success(items, message=f"AI parsed {len(items)} item(s)")
@@ -189,21 +244,23 @@ def bulk_create_expenses(
     today = date_type.today()
 
     for item in request.items:
-        # Find matching category by name for this user, or fall back to first category
+        # Try exact name match first, then AI-based multilingual match
         cat = db.query(Category).filter(
             Category.user_id == current_user.id,
-            Category.name.ilike(f'%{item.category_name}%')
+            Category.name.ilike(f'%{item.category_name}%'),
         ).first()
 
-        if not cat:
-            cat = db.query(Category).filter(
-                Category.user_id == current_user.id
-            ).first()
+        category_id = str(cat.id) if cat else None
+
+        if not category_id:
+            # Use AI categorizer to match description to user's real categories
+            suggestion = suggest_category(item.description, str(current_user.id), db)
+            category_id = suggestion.get("category_id")
 
         data = CreateExpenseRequest(
             amount=item.amount,
             description=item.description,
-            category_id=str(cat.id) if cat else None,
+            category_id=category_id,
             payment_method=item.payment_method,
             expense_date=item.expense_date or today,
             currency="INR",
