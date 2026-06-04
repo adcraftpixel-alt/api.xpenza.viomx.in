@@ -21,8 +21,8 @@ logger = logging.getLogger(__name__)
 REPORTS_DIR = Path("/tmp/aifinanceos_reports")
 REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
-# Categories considered tax-deductible
-TAX_DEDUCTIBLE_CATEGORIES = {"health", "education", "insurance"}
+# Keyword patterns for tax-deductible categories (partial, case-insensitive match)
+TAX_DEDUCTIBLE_KEYWORDS = ["health", "medical", "education", "insurance", "school", "hospital"]
 
 
 class ReportService:
@@ -180,8 +180,9 @@ class ReportService:
             if e.category_id:
                 cat_obj = db.query(Category).filter(Category.id == e.category_id).first()
 
-            cat_name = cat_obj.name if cat_obj else ""
-            if cat_name.lower() not in TAX_DEDUCTIBLE_CATEGORIES:
+            cat_name = cat_obj.name if cat_obj else (e.ai_category or "")
+            cat_lower = cat_name.lower()
+            if not any(kw in cat_lower for kw in TAX_DEDUCTIBLE_KEYWORDS):
                 continue
 
             amt = float(e.amount)
