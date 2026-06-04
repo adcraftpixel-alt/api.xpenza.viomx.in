@@ -160,6 +160,11 @@ class BudgetService:
         db.commit()
         return _budget_to_dict(b, None, amount, month, year)
 
+    def _get_category_ids(self, db: Session, category_id: str) -> list:
+        """Return the category plus all descendant IDs (handles 3-level hierarchy)."""
+        from app.api.v1.categories.service import CategoryService
+        return CategoryService().get_descendant_ids(db, category_id)
+
     def _spent_for_month(self, b: Budget, db: Session, month: int, year: int) -> float:
         """Calculate how much was spent against this budget in a specific month."""
         from sqlalchemy import or_
@@ -169,7 +174,9 @@ class BudgetService:
             extract('month', Expense.expense_date) == month,
         )
         if b.category_id:
-            query = query.filter(Expense.category_id == b.category_id)
+            # Include expenses from the category AND all its descendants
+            cat_ids = self._get_category_ids(db, str(b.category_id))
+            query = query.filter(Expense.category_id.in_(cat_ids))
         else:
             budget_name_lower = (b.name or '').lower()
             keywords = None
@@ -247,8 +254,9 @@ class BudgetService:
             query = query.filter(Expense.expense_date <= b.end_date)
 
         if b.category_id:
-            # Linked to a category — exact match
-            query = query.filter(Expense.category_id == b.category_id)
+            # Include expenses from the category AND all its descendants
+            cat_ids = self._get_category_ids(db, str(b.category_id))
+            query = query.filter(Expense.category_id.in_(cat_ids))
         else:
             # No category linked — match by budget name keywords
             budget_name_lower = (b.name or '').lower()

@@ -15,9 +15,17 @@ def list_categories(
     current_user=Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ):
-    """List all categories for the current user (custom + defaults)."""
-    cats = service.list(db, str(current_user.id))
-    return success(cats)
+    """Flat list of all categories for the current user."""
+    return success(service.list(db, str(current_user.id)))
+
+
+@router.get("/tree")
+def list_categories_tree(
+    current_user=Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    """Hierarchical tree of categories (roots with nested children up to 3 levels)."""
+    return success(service.list_tree(db, str(current_user.id)))
 
 
 @router.post("", status_code=201)
@@ -26,7 +34,7 @@ def create_category(
     current_user=Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ):
-    """Create a custom category."""
+    """Create a category. Pass parent_id to create a sub-category or child."""
     cat = service.create(db, str(current_user.id), data)
     return success(cat, message="Category created")
 
@@ -37,9 +45,7 @@ def get_category(
     current_user=Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ):
-    """Get a single category by ID."""
-    cat = service.get_by_id(db, category_id, str(current_user.id))
-    return success(cat)
+    return success(service.get_by_id(db, category_id, str(current_user.id)))
 
 
 @router.put("/{category_id}")
@@ -49,9 +55,19 @@ def update_category(
     current_user=Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ):
-    """Update a custom category. Default categories cannot be modified."""
     cat = service.update(db, category_id, str(current_user.id), data)
     return success(cat, message="Category updated")
+
+
+@router.post("/seed-defaults", status_code=201)
+def seed_default_categories(
+    current_user=Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    """Seed the full default category set for the current user.
+    Safe to call multiple times — skips categories that already exist."""
+    count = service.seed_defaults(db, str(current_user.id))
+    return success({"created": count}, message=f"{count} default categories added")
 
 
 @router.delete("/{category_id}")
@@ -60,6 +76,6 @@ def delete_category(
     current_user=Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ):
-    """Delete a custom category. Default categories cannot be deleted."""
+    """Delete a category and all its children (cascade)."""
     service.delete(db, category_id, str(current_user.id))
     return success(None, message="Category deleted")

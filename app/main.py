@@ -20,15 +20,12 @@ app = FastAPI(
     redoc_url=None,          # disabled — use /api-docs instead (self-hosted)
 )
 
-# CORS
-origins = ["*"] if settings.ENVIRONMENT == "development" else [
-    settings.FRONTEND_URL,
-    settings.ADMIN_URL,
-]
+# CORS — allow all origins; JWT is passed via Authorization header (not cookies)
+# so allow_credentials stays False, which is compatible with allow_origins=["*"].
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )

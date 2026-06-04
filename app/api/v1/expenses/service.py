@@ -14,10 +14,14 @@ logger = logging.getLogger(__name__)
 
 
 def _expense_to_dict(e: Expense) -> dict:
+    cat = e.category  # relationship — already loaded via selectin/joined load
     return {
         "id": str(e.id),
         "user_id": str(e.user_id),
         "category_id": str(e.category_id) if e.category_id else None,
+        "category_name":  cat.name  if cat else (e.ai_category or "General"),
+        "category_icon":  cat.icon  if cat else "💰",
+        "category_color": cat.color if cat else "#6B7280",
         "amount": float(e.amount),
         "currency": e.currency,
         "description": e.description,

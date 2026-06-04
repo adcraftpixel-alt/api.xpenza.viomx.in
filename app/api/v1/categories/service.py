@@ -1,8 +1,10 @@
-from typing import List
+from typing import List, Optional
 from sqlalchemy.orm import Session
 from app.models.category import Category
-from app.core.exceptions import NotFoundError, ForbiddenError, ConflictError
+from app.core.exceptions import NotFoundError, ForbiddenError, ConflictError, ValidationError
 from app.api.v1.categories.schemas import CreateCategoryRequest, UpdateCategoryRequest
+
+MAX_LEVEL = 2  # 0=root, 1=sub-parent, 2=child — three levels max
 
 DEFAULT_CATEGORIES = [
     {"name": "Food & Dining",     "icon": "🍕", "color": "#EF4444"},
@@ -18,42 +20,84 @@ DEFAULT_CATEGORIES = [
 ]
 
 
-def _cat_to_dict(c: Category) -> dict:
-    return {
-        "id": str(c.id),
-        "user_id": str(c.user_id),
-        "name": c.name,
-        "icon": c.icon,
-        "color": c.color,
+def _cat_to_dict(c: Category, include_children: bool = False) -> dict:
+    d = {
+        "id":         str(c.id),
+        "user_id":    str(c.user_id),
+        "parent_id":  str(c.parent_id) if c.parent_id else None,
+        "name":       c.name,
+        "icon":       c.icon,
+        "color":      c.color,
+        "level":      c.level,
         "is_default": c.is_default,
         "created_at": c.created_at.isoformat() if c.created_at else None,
     }
+    if include_children:
+        d["children"] = [_cat_to_dict(ch, include_children=True) for ch in c.children]
+    return d
 
 
 class CategoryService:
+
+    # ── Flat list (all user categories, no tree) ──────────────────────────────
+
     def list(self, db: Session, user_id: str) -> List[dict]:
-        """Return all categories belonging to the user (includes defaults seeded for them)."""
         cats = (
             db.query(Category)
             .filter(Category.user_id == user_id)
-            .order_by(Category.is_default.desc(), Category.name)
+            .order_by(Category.level, Category.is_default.desc(), Category.name)
             .all()
         )
         return [_cat_to_dict(c) for c in cats]
 
+    # ── Hierarchical tree (roots + nested children) ───────────────────────────
+
+    def list_tree(self, db: Session, user_id: str) -> List[dict]:
+        """Return only root-level categories (level=0) with children nested inside."""
+        roots = (
+            db.query(Category)
+            .filter(Category.user_id == user_id, Category.level == 0)
+            .order_by(Category.is_default.desc(), Category.name)
+            .all()
+        )
+        return [_cat_to_dict(r, include_children=True) for r in roots]
+
+    # ── Create ────────────────────────────────────────────────────────────────
+
     def create(self, db: Session, user_id: str, data: CreateCategoryRequest) -> dict:
+        level = 0
+        if data.parent_id:
+            parent = db.query(Category).filter(Category.id == data.parent_id).first()
+            if not parent:
+                raise NotFoundError("Parent category not found")
+            if str(parent.user_id) != str(user_id):
+                raise ForbiddenError("Access denied to parent category")
+            level = parent.level + 1
+            if level > MAX_LEVEL:
+                raise ValidationError(
+                    f"Maximum category depth is {MAX_LEVEL + 1} levels. "
+                    "Cannot create a child under a level-{parent.level} category."
+                )
+
         existing = (
             db.query(Category)
-            .filter(Category.user_id == user_id, Category.name == data.name)
+            .filter(
+                Category.user_id == user_id,
+                Category.name == data.name,
+                Category.parent_id == data.parent_id,
+            )
             .first()
         )
         if existing:
-            raise ConflictError(f"Category '{data.name}' already exists")
+            raise ConflictError(f"Category '{data.name}' already exists at this level")
+
         cat = Category(
             user_id=user_id,
+            parent_id=data.parent_id,
             name=data.name,
             icon=data.icon,
             color=data.color,
+            level=level,
             is_default=False,
         )
         db.add(cat)
@@ -61,13 +105,17 @@ class CategoryService:
         db.refresh(cat)
         return _cat_to_dict(cat)
 
+    # ── Read ──────────────────────────────────────────────────────────────────
+
     def get_by_id(self, db: Session, category_id: str, user_id: str) -> dict:
         cat = db.query(Category).filter(Category.id == category_id).first()
         if not cat:
             raise NotFoundError("Category not found")
         if str(cat.user_id) != str(user_id):
             raise ForbiddenError("Access denied")
-        return _cat_to_dict(cat)
+        return _cat_to_dict(cat, include_children=True)
+
+    # ── Update ────────────────────────────────────────────────────────────────
 
     def update(
         self, db: Session, category_id: str, user_id: str, data: UpdateCategoryRequest
@@ -77,21 +125,19 @@ class CategoryService:
             raise NotFoundError("Category not found")
         if str(cat.user_id) != str(user_id):
             raise ForbiddenError("Access denied")
-        if cat.is_default:
-            raise ForbiddenError("Cannot modify a default category")
         if data.name is not None:
-            # Check uniqueness against other categories for this user
             duplicate = (
                 db.query(Category)
                 .filter(
                     Category.user_id == user_id,
                     Category.name == data.name,
+                    Category.parent_id == cat.parent_id,
                     Category.id != category_id,
                 )
                 .first()
             )
             if duplicate:
-                raise ConflictError(f"Category '{data.name}' already exists")
+                raise ConflictError(f"Category '{data.name}' already exists at this level")
             cat.name = data.name
         if data.icon is not None:
             cat.icon = data.icon
@@ -101,21 +147,43 @@ class CategoryService:
         db.refresh(cat)
         return _cat_to_dict(cat)
 
+    # ── Delete ────────────────────────────────────────────────────────────────
+
     def delete(self, db: Session, category_id: str, user_id: str) -> bool:
         cat = db.query(Category).filter(Category.id == category_id).first()
         if not cat:
             raise NotFoundError("Category not found")
         if str(cat.user_id) != str(user_id):
             raise ForbiddenError("Access denied")
-        if cat.is_default:
-            raise ForbiddenError("Cannot delete a default category")
+        # CASCADE on the FK handles child deletion automatically
         db.delete(cat)
         db.commit()
         return True
 
+    # ── Helpers ───────────────────────────────────────────────────────────────
+
+    def get_descendant_ids(self, db: Session, category_id: str) -> List[str]:
+        """Return category_id plus IDs of all descendants (max 3 levels)."""
+        ids = [str(category_id)]
+        children = (
+            db.query(Category.id)
+            .filter(Category.parent_id == category_id)
+            .all()
+        )
+        for (child_id,) in children:
+            ids.append(str(child_id))
+            grandchildren = (
+                db.query(Category.id)
+                .filter(Category.parent_id == child_id)
+                .all()
+            )
+            for (gc_id,) in grandchildren:
+                ids.append(str(gc_id))
+        return ids
+
+    # ── Seed defaults ─────────────────────────────────────────────────────────
+
     def seed_defaults(self, db: Session, user_id: str) -> int:
-        """Seed default categories for a new user. Returns count of categories created."""
-        # Find which defaults already exist for this user to avoid duplicates
         existing_names = {
             row.name
             for row in db.query(Category.name)
@@ -127,10 +195,12 @@ class CategoryService:
             if defaults["name"] not in existing_names:
                 cat = Category(
                     user_id=user_id,
+                    parent_id=None,
                     name=defaults["name"],
                     icon=defaults["icon"],
                     color=defaults["color"],
-                    is_default=True,
+                    level=0,
+                    is_default=False,
                 )
                 db.add(cat)
                 created += 1
