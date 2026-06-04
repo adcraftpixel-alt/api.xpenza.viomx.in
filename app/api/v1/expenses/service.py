@@ -100,7 +100,55 @@ class ExpenseService:
         db.commit()
         db.refresh(expense)
         self._trigger_budget_recalc(db, user_id)
+        self._check_and_notify(db, user_id, expense, ai_cat)
         return _expense_to_dict(expense)
+
+    def _check_and_notify(self, db: Session, user_id: str, expense: Expense, category_name: str) -> None:
+        """Fire in-app notifications for large expenses and budget threshold breaches."""
+        try:
+            from app.api.v1.notifications.service import NotificationService
+            notif_svc = NotificationService()
+            amount = float(expense.amount)
+
+            # 1. Large expense alert (> ₹2,000)
+            if amount >= 2000:
+                desc = expense.description or expense.merchant or 'Expense'
+                notif_svc.create_notification(
+                    db, user_id,
+                    title=f"Large expense: ₹{amount:,.0f}",
+                    body=f"{desc} — categorised as {category_name}",
+                    type="large_expense",
+                )
+
+            # 2. Budget threshold alert — check if this expense pushed a budget over 80%
+            if expense.category_id:
+                from app.models.budget import Budget
+                from sqlalchemy import func, extract
+                from datetime import date
+                today = date.today()
+                budget = (
+                    db.query(Budget)
+                    .filter(
+                        Budget.user_id == user_id,
+                        Budget.category_id == expense.category_id,
+                        Budget.is_active == True,
+                    )
+                    .first()
+                )
+                if budget and float(budget.amount) > 0:
+                    pct = float(budget.spent) / float(budget.amount) * 100
+                    threshold = float(budget.alert_threshold or 80)
+                    if pct >= threshold:
+                        is_over = pct >= 100
+                        label = budget.name or category_name
+                        notif_svc.create_notification(
+                            db, user_id,
+                            title=f"{'Over' if is_over else 'Near'} budget: {label}",
+                            body=f"₹{budget.spent:,.0f} of ₹{budget.amount:,.0f} used ({pct:.0f}%{'!' if is_over else ''})",
+                            type="budget_alert",
+                        )
+        except Exception:
+            pass  # Never let notification errors break expense creation
 
     def get_by_id(self, db: Session, expense_id: str, user_id: str) -> dict:
         expense = db.query(Expense).filter(Expense.id == expense_id).first()
