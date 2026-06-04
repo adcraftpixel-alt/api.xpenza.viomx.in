@@ -12,3 +12,6 @@ from app.models.payment_history import PaymentHistory  # noqa: F401
 from app.models.chat import AIChatHistory  # noqa: F401
 from app.models.ocr_scan import OCRScan  # noqa: F401
 from app.models.device_token import UserDeviceToken  # noqa: F401
+from app.models.wallet import Wallet  # noqa: F401
+from app.models.family_group import FamilyGroup, FamilyGroupMember  # noqa: F401
+from app.models.budget_month_amount import BudgetMonthAmount  # noqa: F401

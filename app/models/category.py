@@ -23,11 +23,18 @@ class Category(Base):
     expenses = relationship("Expense", back_populates="category")
     budgets  = relationship("Budget", back_populates="category")
 
-    # Self-referential tree
+    # Self-referential tree (adjacency list)
     children = relationship(
         "Category",
-        backref="parent",
+        back_populates="parent_cat",
         foreign_keys=[parent_id],
         cascade="all, delete-orphan",
         lazy="selectin",
+    )
+    parent_cat = relationship(
+        "Category",
+        back_populates="children",
+        foreign_keys=[parent_id],
+        remote_side="Category.id",
+        lazy="select",
     )

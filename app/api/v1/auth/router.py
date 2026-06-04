@@ -40,7 +40,7 @@ def login_for_swagger(
     """
     Swagger UI Authorize button compatible endpoint.
     Enter your **email or phone** in the username field and your password.
-    Demo credentials: username=demo@aifinanceos.com  password=demo123
+    Demo credentials: username=demo@rupexi.com  password=demo123
     """
     from app.api.v1.auth.schemas import LoginRequest as LR
     data = LR(email_or_phone=form_data.username, password=form_data.password)

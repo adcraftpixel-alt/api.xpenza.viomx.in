@@ -22,7 +22,7 @@ from app.models.subscription import TrackedSubscription
 db = SessionLocal()
 
 # ── 1. Demo user ────────────────────────────────────────────────────────────
-EMAIL = "demo@aifinanceos.com"
+EMAIL = "demo@rupexi.com"
 existing = db.query(User).filter(User.email == EMAIL).first()
 if existing:
     user = existing
@@ -315,5 +315,5 @@ db.commit()
 db.close()
 
 print("\n✅ Seed complete!")
-print(f"   Email:    demo@aifinanceos.com")
+print(f"   Email:    demo@rupexi.com")
 print(f"   Password: Demo@1234")

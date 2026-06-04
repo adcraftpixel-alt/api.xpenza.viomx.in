@@ -16,7 +16,7 @@ def send_email(to_email: str, subject: str, html_content: str, plain_text: str =
         from sendgrid.helpers.mail import Mail
 
         message = Mail(
-            from_email="noreply@aifinanceos.com",
+            from_email="noreply@rupexi.com",
             to_emails=to_email,
             subject=subject,
             html_content=html_content,
@@ -32,7 +32,7 @@ def send_email(to_email: str, subject: str, html_content: str, plain_text: str =
 
 
 def send_otp_email(to_email: str, otp: str) -> bool:
-    subject = "Your OTP for AI Finance OS"
+    subject = "Your OTP for Rupexi"
     html = f"""
     <h2>Your OTP Code</h2>
     <p>Your one-time password is: <strong style="font-size:24px">{otp}</strong></p>
@@ -42,7 +42,7 @@ def send_otp_email(to_email: str, otp: str) -> bool:
 
 
 def send_password_reset_email(to_email: str, reset_url: str) -> bool:
-    subject = "Reset your AI Finance OS password"
+    subject = "Reset your Rupexi password"
     html = f"""
     <h2>Password Reset</h2>
     <p>Click the link below to reset your password:</p>

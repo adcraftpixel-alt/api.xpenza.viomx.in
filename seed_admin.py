@@ -14,7 +14,7 @@ from app.core.security import hash_password
 from app.models.user import User
 from app.models.user_preference import UserPreference
 
-ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "admin@aifinanceos.com")
+ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "admin@rupexi.com")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "Admin@1234")
 ADMIN_NAME = os.getenv("ADMIN_NAME", "Super Admin")
 

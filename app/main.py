@@ -13,7 +13,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 app = FastAPI(
-    title="AI Finance OS API",
+    title="Rupexi API",
     version="1.0.0",
     description="AI-powered expense management backend",
     docs_url="/docs",
@@ -75,7 +75,7 @@ async def api_docs_page():
     from fastapi.openapi.docs import get_swagger_ui_html
     return get_swagger_ui_html(
         openapi_url="/openapi.json",
-        title="AI Finance OS — API Docs",
+        title="Rupexi — API Docs",
         swagger_js_url="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js",
         swagger_css_url="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css",
         swagger_favicon_url="https://fastapi.tiangolo.com/img/favicon.png",
@@ -103,7 +103,7 @@ app.include_router(router)
 # Startup
 @app.on_event("startup")
 def startup_event():
-    logger.info("Starting AI Finance OS API...")
+    logger.info("Starting Rupexi API...")
     try:
         from app.database import create_tables
         create_tables()
@@ -130,12 +130,12 @@ def _seed_demo_user():
 
     db = SessionLocal()
     try:
-        existing = db.query(User).filter(User.email == "demo@aifinanceos.com").first()
+        existing = db.query(User).filter(User.email == "demo@rupexi.com").first()
         if existing:
             return
         demo = User(
             name="Demo User",
-            email="demo@aifinanceos.com",
+            email="demo@rupexi.com",
             phone="+919999999999",
             password_hash=hash_password("demo123"),
             user_type="personal",
@@ -146,7 +146,7 @@ def _seed_demo_user():
         )
         db.add(demo)
         db.commit()
-        logger.info("Demo user created: demo@aifinanceos.com / demo123")
+        logger.info("Demo user created: demo@rupexi.com / demo123")
     finally:
         db.close()
 
