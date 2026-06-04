@@ -35,7 +35,7 @@ def _expense_to_dict(e: Expense) -> dict:
         "source": e.source,
         "ai_category": e.ai_category,
         "notes": e.notes,
-        "created_at": str(e.created_at),
+        "created_at": e.created_at.isoformat() + "Z" if e.created_at else None,
     }
 
 
@@ -67,10 +67,22 @@ class ExpenseService:
         return 'General'
 
     def create(self, db: Session, user_id: str, data: CreateExpenseRequest) -> dict:
+        # Auto-assign category_id via AI when not provided (chat screen, quick-add, etc.)
+        category_id = data.category_id
+        if not category_id:
+            try:
+                from app.api.v1.expenses.ai_categorizer import suggest_category
+                suggestion = suggest_category(
+                    data.description or data.merchant or '', user_id, db
+                )
+                category_id = suggestion.get('category_id')
+            except Exception:
+                pass
+
         ai_cat = self._auto_categorize(data.description or '', getattr(data, 'ai_category', None))
         expense = Expense(
             user_id=user_id,
-            category_id=data.category_id,
+            category_id=category_id,
             amount=data.amount,
             currency=data.currency,
             description=data.description,
