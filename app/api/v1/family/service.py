@@ -11,6 +11,13 @@ from app.core.exceptions import NotFoundError, ForbiddenError, BadRequestError
 from app.api.v1.family.schemas import CreateGroupRequest, InviteMemberRequest
 
 
+def _same_phone(a: str, b: str) -> bool:
+    """Compare two phone numbers by their last 10 digits (ignores +91 etc.)."""
+    da = "".join(ch for ch in (a or "") if ch.isdigit())[-10:]
+    db_ = "".join(ch for ch in (b or "") if ch.isdigit())[-10:]
+    return bool(da) and da == db_
+
+
 def _member_to_dict(m: FamilyGroupMember) -> dict:
     return {
         "id": str(m.id),
@@ -124,14 +131,41 @@ class FamilyService:
     def invite_member(self, db: Session, user_id: str, data: InviteMemberRequest) -> dict:
         group = self._get_user_group(db, user_id)
         if not group:
-            raise BadRequestError("Create a family group first")
+            # Auto-create a default group so the user can invite straight away
+            user = db.query(User).filter(User.id == user_id).first()
+            group_name = f"{user.name}'s Family" if user and user.name else "My Family"
+            group = FamilyGroup(name=group_name, created_by=user_id)
+            db.add(group)
+            db.flush()
+            db.add(FamilyGroupMember(
+                group_id=str(group.id),
+                user_id=user_id,
+                phone=(user.phone if user else "") or "",
+                name=user.name if user else None,
+                role="admin",
+                status="accepted",
+                joined_at=datetime.utcnow(),
+            ))
+            db.flush()
 
-        # Check not already invited
+        # ── Validation: can't invite your own number ──────────────────────
+        inviter = db.query(User).filter(User.id == user_id).first()
+        if inviter and inviter.phone and \
+                _same_phone(inviter.phone, data.phone):
+            raise BadRequestError("You can't invite your own number")
+
+        # ── Already invited / member ──────────────────────────────────────
         existing = db.query(FamilyGroupMember).filter(
             FamilyGroupMember.group_id == str(group.id),
             FamilyGroupMember.phone == data.phone,
         ).first()
         if existing:
+            if existing.status == "accepted":
+                raise BadRequestError("This number is already a member")
+            # Still pending → treat as a re-send (re-notify the invitee)
+            linked = db.query(User).filter(User.phone == data.phone).first()
+            if linked:
+                self._notify_invitee(db, linked, group, user_id)
             return _member_to_dict(existing)
 
         member = FamilyGroupMember(
@@ -151,7 +185,53 @@ class FamilyService:
         db.add(member)
         db.commit()
         db.refresh(member)
+
+        # Notify the invitee if they're already a Rupexi user
+        if linked_user:
+            self._notify_invitee(db, linked_user, group, user_id)
+
         return _member_to_dict(member)
+
+    def _notify_invitee(self, db: Session, invitee: User,
+                        group: FamilyGroup, inviter_id: str) -> None:
+        """Create an in-app notification + push for a known invitee."""
+        inviter = db.query(User).filter(User.id == inviter_id).first()
+        inviter_name = (inviter.name if inviter else None) or "Someone"
+        title = "Family invite"
+        body  = f"{inviter_name} invited you to join \"{group.name}\""
+
+        # 1. In-app notification row (shows in notification center + drives badge)
+        try:
+            from app.models.notification import Notification
+            db.add(Notification(
+                user_id=str(invitee.id),
+                title=title,
+                body=body,
+                type="family_invite",
+                is_read=False,
+                data={"group_id": str(group.id), "group_name": group.name},
+            ))
+            db.commit()
+        except Exception:
+            db.rollback()
+
+        # 2. Push notification to all the invitee's registered devices
+        try:
+            from app.models.device_token import UserDeviceToken
+            from app.utils.fcm import send_push_notification
+            tokens = db.query(UserDeviceToken).filter(
+                UserDeviceToken.user_id == str(invitee.id)
+            ).all()
+            for t in tokens:
+                send_push_notification(
+                    device_token=t.device_token,
+                    title=title,
+                    body=body,
+                    data={"group_id": str(group.id)},
+                    notification_type="family_invite",
+                )
+        except Exception:
+            pass
 
     def get_members(self, db: Session, user_id: str) -> List[dict]:
         group = self._get_user_group(db, user_id)
@@ -207,22 +287,18 @@ class FamilyService:
         if not group:
             return {"expenses": [], "total": 0, "member_totals": {}}
 
-        # Collect all accepted member user_ids
-        member_user_ids = [
-            str(m.user_id) for m in group.members
-            if m.user_id and m.status == "accepted"
-        ]
-
+        # Only expenses explicitly added to THIS family group (family mode),
+        # not every member's personal spending.
         expenses = db.query(Expense).filter(
-            Expense.user_id.in_(member_user_ids),
+            Expense.family_group_id == str(group.id),
             extract("year", Expense.expense_date) == year,
             extract("month", Expense.expense_date) == month,
         ).order_by(Expense.expense_date.desc()).all()
 
-        # Per-member totals
+        # Per-member totals — attribute to whoever added the expense
         member_totals: dict = {}
         for e in expenses:
-            uid = str(e.user_id)
+            uid = str(e.added_by_user_id or e.user_id)
             member_totals[uid] = member_totals.get(uid, 0) + float(e.amount)
 
         # Enrich with member names

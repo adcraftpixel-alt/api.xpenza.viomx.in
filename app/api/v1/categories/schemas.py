@@ -14,6 +14,7 @@ class UpdateCategoryRequest(BaseModel):
     name: Optional[str] = None
     icon: Optional[str] = None
     color: Optional[str] = None
+    parent_id: Optional[str] = None          # set to move category; use "" to promote back to root
 
 
 class CategoryResponse(BaseModel):

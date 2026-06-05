@@ -125,6 +125,32 @@ class CategoryService:
             raise NotFoundError("Category not found")
         if str(cat.user_id) != str(user_id):
             raise ForbiddenError("Access denied")
+        updated = data.model_dump(exclude_unset=True)
+
+        # ── Handle parent change (drag-drop to sub-category) ──────────────────
+        if 'parent_id' in updated:
+            new_parent_id = updated['parent_id']
+            if new_parent_id:
+                # Moving under a new parent
+                if new_parent_id == category_id:
+                    raise ValidationError("A category cannot be its own parent")
+                parent = db.query(Category).filter(Category.id == new_parent_id).first()
+                if not parent:
+                    raise NotFoundError("Target parent category not found")
+                if str(parent.user_id) != str(user_id):
+                    raise ForbiddenError("Access denied to target category")
+                if parent.level >= MAX_LEVEL:
+                    raise ValidationError(
+                        f"Cannot nest deeper — maximum {MAX_LEVEL + 1} levels allowed"
+                    )
+                cat.parent_id = new_parent_id
+                cat.level = parent.level + 1
+            else:
+                # Promoting back to root (empty string = move to top level)
+                cat.parent_id = None
+                cat.level = 0
+
+        # ── Rename ────────────────────────────────────────────────────────────
         if data.name is not None:
             duplicate = (
                 db.query(Category)
