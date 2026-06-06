@@ -18,7 +18,11 @@ ENV PYTHONDONTWRITEBYTECODE=1
 
 EXPOSE 8000
 
-# Schema is managed at app startup (create_all + idempotent schema patches in
-# app.main), NOT alembic — running alembic here crash-loops the container
-# because prod was bootstrapped with create_all (empty alembic_version).
-CMD uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}
+# Copy startup script that handles Alembic migration initialization
+COPY start.sh .
+RUN chmod +x start.sh
+
+# Apply DB migrations before starting so the schema always matches the code.
+# The startup script stamps the initial revision if needed, then runs upgrade head.
+CMD ["./start.sh"]
+
