@@ -79,12 +79,20 @@ class BudgetService:
         return _budget_to_dict(budget)
 
     def list(self, db: Session, user_id: str,
-             month: Optional[int] = None, year: Optional[int] = None) -> List[dict]:
+             month: Optional[int] = None, year: Optional[int] = None,
+             shared: bool = False) -> List[dict]:
         from app.models.budget_month_amount import BudgetMonthAmount
-        budgets = db.query(Budget).filter(
+        q = db.query(Budget).filter(
             Budget.user_id == user_id,
             Budget.is_active == True,
-        ).order_by(Budget.start_date.desc()).all()
+        )
+        if shared:
+            # Family mode → only shared/family budgets
+            q = q.filter(Budget.is_shared == True)  # noqa: E712
+        else:
+            # Personal mode → only personal budgets (not shared with family)
+            q = q.filter(Budget.is_shared == False)  # noqa: E712
+        budgets = q.order_by(Budget.start_date.desc()).all()
 
         if month is not None and year is not None:
             result = []

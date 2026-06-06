@@ -33,10 +33,13 @@ def list_budgets(
     month: Optional[int] = Query(default=None, ge=1, le=12,
                                   description="Filter spent by month (1-12)"),
     year: Optional[int] = Query(default=None, description="Filter spent by year"),
+    shared: bool = Query(default=False,
+                         description="True = family budgets, False = personal"),
     current_user=Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
-    budgets = service.list(db, str(current_user.id), month=month, year=year)
+    budgets = service.list(db, str(current_user.id), month=month, year=year,
+                           shared=shared)
     return success(budgets)
 
 
