@@ -95,9 +95,6 @@ class ExpenseService:
             source=data.source,
             notes=data.notes,
             ai_category=ai_cat,
-            # Tag as a family expense when added from family mode
-            family_group_id=getattr(data, 'family_group_id', None),
-            added_by_user_id=user_id,
         )
         db.add(expense)
         db.commit()

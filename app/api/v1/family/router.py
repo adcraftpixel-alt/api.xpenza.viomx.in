@@ -2,7 +2,10 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.core.dependencies import get_current_active_user
-from app.api.v1.family.schemas import CreateGroupRequest, InviteMemberRequest, AcceptInviteRequest
+from app.api.v1.family.schemas import (
+    CreateGroupRequest, InviteMemberRequest, AcceptInviteRequest,
+    SetContributionRequest,
+)
 from app.api.v1.family.service import FamilyService
 from app.utils.response import success
 
@@ -46,6 +49,18 @@ def get_members(
 ):
     members = service.get_members(db, str(current_user.id))
     return success(members)
+
+
+@router.put("/members/{member_id}/contribution")
+def set_contribution(
+    member_id: str,
+    data: SetContributionRequest,
+    current_user=Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    member = service.set_contribution(
+        db, str(current_user.id), member_id, data.amount)
+    return success(member, message="Contribution updated")
 
 
 @router.get("/invites/pending")

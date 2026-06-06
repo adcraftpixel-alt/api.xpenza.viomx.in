@@ -26,6 +26,7 @@ def _member_to_dict(m: FamilyGroupMember) -> dict:
         "role": m.role,
         "status": m.status,
         "user_id": str(m.user_id) if m.user_id else None,
+        "contribution": float(m.contribution or 0),
     }
 
 
@@ -107,6 +108,11 @@ class FamilyService:
         db.add(group)
         db.flush()
 
+        # Creator's contribution: explicit value, else default to their salary
+        creator_contribution = data.contribution
+        if creator_contribution is None:
+            creator_contribution = float(user.monthly_income or 0) if user else 0
+
         # Add creator as admin member
         admin = FamilyGroupMember(
             group_id=str(group.id),
@@ -115,6 +121,7 @@ class FamilyService:
             name=user.name,
             role="admin",
             status="accepted",
+            contribution=creator_contribution,
             joined_at=datetime.utcnow(),
         )
         db.add(admin)
@@ -253,6 +260,9 @@ class FamilyService:
         member.user_id = user_id
         member.name = member.name or user.name
         member.joined_at = datetime.utcnow()
+        # Default contribution to their salary so the household pool reflects them
+        if float(member.contribution or 0) == 0 and user.monthly_income:
+            member.contribution = float(user.monthly_income)
         db.commit()
         db.refresh(member)
         return _member_to_dict(member)
@@ -285,20 +295,25 @@ class FamilyService:
     ) -> dict:
         group = self._get_user_group(db, user_id)
         if not group:
-            return {"expenses": [], "total": 0, "member_totals": {}}
+            return {"has_group": False, "expenses": [], "total": 0,
+                    "member_totals": {}}
 
-        # Only expenses explicitly added to THIS family group (family mode),
-        # not every member's personal spending.
+        # Collect all accepted member user_ids
+        member_user_ids = [
+            str(m.user_id) for m in group.members
+            if m.user_id and m.status == "accepted"
+        ]
+
         expenses = db.query(Expense).filter(
-            Expense.family_group_id == str(group.id),
+            Expense.user_id.in_(member_user_ids),
             extract("year", Expense.expense_date) == year,
             extract("month", Expense.expense_date) == month,
         ).order_by(Expense.expense_date.desc()).all()
 
-        # Per-member totals — attribute to whoever added the expense
+        # Per-member totals
         member_totals: dict = {}
         for e in expenses:
-            uid = str(e.added_by_user_id or e.user_id)
+            uid = str(e.user_id)
             member_totals[uid] = member_totals.get(uid, 0) + float(e.amount)
 
         # Enrich with member names
@@ -307,14 +322,59 @@ class FamilyService:
             for m in group.members if m.user_id
         }
 
+        # Household income = sum of contributions across accepted members
+        accepted = [m for m in group.members if m.status == "accepted"]
+        household_income = sum(float(m.contribution or 0) for m in accepted)
+        earner_count = sum(1 for m in accepted if float(m.contribution or 0) > 0)
+        total_spent = sum(float(e.amount) for e in expenses)
+
+        # Per-member contribution breakdown
+        member_contributions = {
+            (m.name or (m.user.name if m.user else "Member")): float(m.contribution or 0)
+            for m in accepted if float(m.contribution or 0) > 0
+        }
+
         return {
+            "has_group": True,
+            "group_name": group.name,
+            "member_count": len(accepted),
             "expenses": [_expense_to_dict(e) for e in expenses],
-            "total": sum(float(e.amount) for e in expenses),
+            "total": total_spent,
+            "household_income": household_income,
+            "earner_count": earner_count,
+            "saved": max(0.0, household_income - total_spent),
             "member_totals": {
                 member_names.get(uid, uid): amt
                 for uid, amt in member_totals.items()
             },
+            "member_contributions": member_contributions,
         }
+
+    def set_contribution(self, db: Session, user_id: str,
+                         member_id: str, amount: float) -> dict:
+        """Set a member's household contribution.
+        Admin can edit anyone; a member can edit their own."""
+        group = self._get_user_group(db, user_id)
+        if not group:
+            raise NotFoundError("No family group")
+
+        member = db.query(FamilyGroupMember).filter(
+            FamilyGroupMember.id == member_id,
+            FamilyGroupMember.group_id == str(group.id),
+        ).first()
+        if not member:
+            raise NotFoundError("Member not found")
+
+        # Permission: admin (group creator) or the member editing their own
+        is_admin = str(group.created_by) == str(user_id)
+        is_self  = member.user_id and str(member.user_id) == str(user_id)
+        if not (is_admin or is_self):
+            raise ForbiddenError("You can only edit your own contribution")
+
+        member.contribution = max(0.0, amount)
+        db.commit()
+        db.refresh(member)
+        return _member_to_dict(member)
 
     def get_shared_budgets(self, db: Session, user_id: str) -> List[dict]:
         group = self._get_user_group(db, user_id)
