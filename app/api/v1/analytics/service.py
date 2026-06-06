@@ -28,7 +28,8 @@ class AnalyticsService:
         daily = db.execute(text("""
             SELECT expense_date::date as day, COALESCE(SUM(amount), 0) as total
             FROM expenses
-            WHERE user_id = :uid AND expense_date >= :start AND expense_date <= :end
+            WHERE user_id = :uid AND family_group_id IS NULL
+              AND expense_date >= :start AND expense_date <= :end
             GROUP BY expense_date::date
             ORDER BY day
         """), {"uid": user_id, "start": month_start, "end": month_end}).fetchall()
@@ -45,7 +46,8 @@ class AnalyticsService:
         # Previous month total
         prev_total = db.execute(text("""
             SELECT COALESCE(SUM(amount), 0) as total FROM expenses
-            WHERE user_id = :uid AND expense_date >= :start AND expense_date <= :end
+            WHERE user_id = :uid AND family_group_id IS NULL
+              AND expense_date >= :start AND expense_date <= :end
         """), {"uid": user_id, "start": prev_month_start, "end": prev_month_end}).scalar() or 0
 
         change_pct = 0.0
@@ -69,7 +71,7 @@ class AnalyticsService:
                 SUM(e.amount) as total
             FROM expenses e
             LEFT JOIN categories c ON c.id = e.category_id
-            WHERE e.user_id = :uid
+            WHERE e.user_id = :uid AND e.family_group_id IS NULL
               AND e.expense_date >= :start AND e.expense_date <= :end
             GROUP BY c.name, c.color
             ORDER BY total DESC
@@ -190,6 +192,7 @@ class AnalyticsService:
             )
             .filter(
                 Expense.user_id == user_id,
+                Expense.family_group_id.is_(None),
                 Expense.expense_date >= month_start,
                 Expense.expense_date <= month_end,
             )

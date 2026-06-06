@@ -171,7 +171,11 @@ class ExpenseService:
         min_amount: Optional[float] = None,
         max_amount: Optional[float] = None,
     ) -> dict:
-        query = db.query(Expense).filter(Expense.user_id == user_id)
+        # Personal view: exclude expenses that belong to a family group
+        query = db.query(Expense).filter(
+            Expense.user_id == user_id,
+            Expense.family_group_id.is_(None),
+        )
         if category_id:
             query = query.filter(Expense.category_id == category_id)
         if start_date:

@@ -304,8 +304,9 @@ class FamilyService:
             if m.user_id and m.status == "accepted"
         ]
 
+        # Only expenses explicitly added to THIS family group (not personal ones)
         expenses = db.query(Expense).filter(
-            Expense.user_id.in_(member_user_ids),
+            Expense.family_group_id == str(group.id),
             extract("year", Expense.expense_date) == year,
             extract("month", Expense.expense_date) == month,
         ).order_by(Expense.expense_date.desc()).all()
