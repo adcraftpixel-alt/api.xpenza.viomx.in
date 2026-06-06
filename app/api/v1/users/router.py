@@ -19,8 +19,11 @@ prefs_service = PreferencesService()
 
 
 @router.get("/me")
-def get_me(current_user=Depends(get_current_active_user)):
-    return success(service.get_me(current_user))
+def get_me(
+    current_user=Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    return success(service.get_me(current_user, db))
 
 
 @router.put("/me")
@@ -30,7 +33,7 @@ def update_me(
     db: Session = Depends(get_db),
 ):
     user = service.update_me(db, current_user, data)
-    return success(service.get_me(user), message="Profile updated")
+    return success(service.get_me(user, db), message="Profile updated")
 
 
 @router.post("/onboarding")
@@ -40,7 +43,7 @@ def complete_onboarding(
     db: Session = Depends(get_db),
 ):
     user = service.complete_onboarding(db, current_user, data)
-    return success(service.get_me(user), message="Onboarding complete")
+    return success(service.get_me(user, db), message="Onboarding complete")
 
 
 @router.get("/onboarding/status", response_model=None)

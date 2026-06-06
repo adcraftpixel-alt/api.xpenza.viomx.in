@@ -1,9 +1,13 @@
 import logging
+from datetime import date
 from typing import Optional
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models.user import User
 from app.models.user_preference import UserPreference
+from app.models.expense import Expense
+from app.models.savings_goal import SavingsGoal
 from app.core.exceptions import NotFoundError, ConflictError
 from app.api.v1.users.schemas import UpdateUserRequest, OnboardingRequest
 from app.utils.storage import upload_to_s3, generate_unique_filename
@@ -12,8 +16,8 @@ logger = logging.getLogger(__name__)
 
 
 class UserService:
-    def get_me(self, user: User) -> dict:
-        return {
+    def get_me(self, user: User, db: Optional[Session] = None) -> dict:
+        data = {
             "id": str(user.id),
             "name": user.name,
             "email": user.email,
@@ -27,6 +31,37 @@ class UserService:
             "onboarding_done": user.onboarding_done,
             "biometric_enabled": user.biometric_enabled,
             "created_at": str(user.created_at) if user.created_at else None,
+        }
+        if db is not None:
+            data.update(self._profile_stats(db, str(user.id)))
+        return data
+
+    def _profile_stats(self, db: Session, user_id: str) -> dict:
+        """Personal-scope spending stats shown on the profile header."""
+        # Personal expenses only (exclude shared family expenses)
+        base = db.query(Expense).filter(
+            Expense.user_id == user_id,
+            Expense.family_group_id.is_(None),
+        )
+        total_spent = db.query(func.coalesce(func.sum(Expense.amount), 0)).filter(
+            Expense.user_id == user_id, Expense.family_group_id.is_(None),
+        ).scalar() or 0
+        month_start = date.today().replace(day=1)
+        this_month = db.query(func.coalesce(func.sum(Expense.amount), 0)).filter(
+            Expense.user_id == user_id,
+            Expense.family_group_id.is_(None),
+            Expense.expense_date >= month_start,
+        ).scalar() or 0
+        expense_count = base.count()
+        # Savings = total put aside across the user's savings goals
+        savings = db.query(func.coalesce(func.sum(SavingsGoal.current_amount), 0)).filter(
+            SavingsGoal.user_id == user_id,
+        ).scalar() or 0
+        return {
+            "total_spent": float(total_spent),
+            "this_month_spent": float(this_month),
+            "expense_count": int(expense_count),
+            "savings": float(savings),
         }
 
     def update_me(self, db: Session, user: User, data: UpdateUserRequest) -> User:
