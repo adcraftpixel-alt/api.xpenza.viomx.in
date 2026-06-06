@@ -80,6 +80,7 @@ class ExpenseService:
                 pass
 
         ai_cat = self._auto_categorize(data.description or '', getattr(data, 'ai_category', None))
+        family_group_id = getattr(data, 'family_group_id', None)
         expense = Expense(
             user_id=user_id,
             category_id=category_id,
@@ -95,6 +96,9 @@ class ExpenseService:
             source=data.source,
             notes=data.notes,
             ai_category=ai_cat,
+            # Family expense when created from the family chat; else personal
+            family_group_id=family_group_id,
+            added_by_user_id=user_id if family_group_id else None,
         )
         db.add(expense)
         db.commit()
