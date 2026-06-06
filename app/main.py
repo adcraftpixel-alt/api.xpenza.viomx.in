@@ -105,8 +105,9 @@ app.include_router(router)
 def startup_event():
     logger.info("Starting Rupexi API...")
     try:
-        from app.database import create_tables
+        from app.database import create_tables, apply_schema_patches
         create_tables()
+        apply_schema_patches()
         logger.info("Database tables created/verified")
     except Exception as e:
         logger.error(f"Startup error during table creation: {e}")

@@ -25,9 +25,28 @@ def get_db():
 def create_tables():
     # Import all models so SQLAlchemy knows about them
     from app.models import (  # noqa: F401
-        user, user_preference, category, expense, budget,
+        user, user_preference, category, category_keyword, expense, budget,
         savings_goal, subscription, ai_insight, notification,
         billing, payment_history, chat, ocr_scan, family_group, wallet,
         budget_month_amount
     )
     Base.metadata.create_all(bind=engine)
+
+
+def apply_schema_patches():
+    """
+    Idempotent schema patches for columns added to EXISTING tables.
+
+    create_all() creates missing tables but never ALTERs existing ones, so new
+    columns on already-created tables must be added explicitly. All statements
+    are IF NOT EXISTS, so this is safe to run on every startup.
+    """
+    from sqlalchemy import text
+    statements = [
+        "ALTER TABLE categories ADD COLUMN IF NOT EXISTS family_group_id UUID",
+        "CREATE INDEX IF NOT EXISTS ix_categories_family_group_id "
+        "ON categories (family_group_id)",
+    ]
+    with engine.begin() as conn:
+        for stmt in statements:
+            conn.execute(text(stmt))
