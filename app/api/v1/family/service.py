@@ -311,15 +311,22 @@ class FamilyService:
             extract("month", Expense.expense_date) == month,
         ).order_by(Expense.expense_date.desc()).all()
 
+        # Display name helper — appends "(Me)" for the requesting user
+        def display_name(m) -> str:
+            base = m.name or (m.user.name if m.user else "Member")
+            if m.user_id and str(m.user_id) == str(user_id):
+                return f"{base} (Me)"
+            return base
+
         # Per-member totals
         member_totals: dict = {}
         for e in expenses:
             uid = str(e.user_id)
             member_totals[uid] = member_totals.get(uid, 0) + float(e.amount)
 
-        # Enrich with member names
+        # user_id → display name (with "(Me)" for self)
         member_names = {
-            str(m.user_id): (m.name or (m.user.name if m.user else "Member"))
+            str(m.user_id): display_name(m)
             for m in group.members if m.user_id
         }
 
@@ -331,15 +338,23 @@ class FamilyService:
 
         # Per-member contribution breakdown
         member_contributions = {
-            (m.name or (m.user.name if m.user else "Member")): float(m.contribution or 0)
+            display_name(m): float(m.contribution or 0)
             for m in accepted if float(m.contribution or 0) > 0
         }
+
+        # Expense list — mark "(Me)" on the requester's own entries
+        expense_dicts = []
+        for e in expenses:
+            d = _expense_to_dict(e)
+            if str(e.user_id) == str(user_id):
+                d["added_by_name"] = f"{d.get('added_by_name', 'Member')} (Me)"
+            expense_dicts.append(d)
 
         return {
             "has_group": True,
             "group_name": group.name,
             "member_count": len(accepted),
-            "expenses": [_expense_to_dict(e) for e in expenses],
+            "expenses": expense_dicts,
             "total": total_spent,
             "household_income": household_income,
             "earner_count": earner_count,
