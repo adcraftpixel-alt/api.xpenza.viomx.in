@@ -353,7 +353,7 @@ class FamilyService:
     def set_contribution(self, db: Session, user_id: str,
                          member_id: str, amount: float) -> dict:
         """Set a member's household contribution.
-        Admin can edit anyone; a member can edit their own."""
+        Each member can edit ONLY their own income (privacy)."""
         group = self._get_user_group(db, user_id)
         if not group:
             raise NotFoundError("No family group")
@@ -365,11 +365,11 @@ class FamilyService:
         if not member:
             raise NotFoundError("Member not found")
 
-        # Permission: admin (group creator) or the member editing their own
-        is_admin = str(group.created_by) == str(user_id)
-        is_self  = member.user_id and str(member.user_id) == str(user_id)
-        if not (is_admin or is_self):
-            raise ForbiddenError("You can only edit your own contribution")
+        # Privacy: you can only edit your own income contribution
+        is_self = member.user_id and str(member.user_id) == str(user_id)
+        if not is_self:
+            raise ForbiddenError(
+                "Each member can only edit their own income")
 
         member.contribution = max(0.0, amount)
         db.commit()
