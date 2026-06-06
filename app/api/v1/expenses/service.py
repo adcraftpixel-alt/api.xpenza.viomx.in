@@ -67,20 +67,24 @@ class ExpenseService:
         return 'General'
 
     def create(self, db: Session, user_id: str, data: CreateExpenseRequest) -> dict:
-        # Auto-assign category_id via AI when not provided (chat screen, quick-add, etc.)
+        family_group_id = getattr(data, 'family_group_id', None)
+
+        # Auto-assign category_id via the hybrid resolver when not provided
+        # (chat screen, quick-add, etc.). Resolve against the correct scope —
+        # the shared family tree for family expenses, else the personal tree.
         category_id = data.category_id
         if not category_id:
             try:
                 from app.api.v1.expenses.ai_categorizer import suggest_category
                 suggestion = suggest_category(
-                    data.description or data.merchant or '', user_id, db
+                    data.description or data.merchant or '', user_id, db,
+                    family_group_id=family_group_id,
                 )
                 category_id = suggestion.get('category_id')
             except Exception:
                 pass
 
         ai_cat = self._auto_categorize(data.description or '', getattr(data, 'ai_category', None))
-        family_group_id = getattr(data, 'family_group_id', None)
         expense = Expense(
             user_id=user_id,
             category_id=category_id,

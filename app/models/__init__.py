@@ -1,6 +1,7 @@
 from app.models.user import User  # noqa: F401
 from app.models.user_preference import UserPreference  # noqa: F401
 from app.models.category import Category  # noqa: F401
+from app.models.category_keyword import CategoryKeyword  # noqa: F401
 from app.models.expense import Expense  # noqa: F401
 from app.models.budget import Budget  # noqa: F401
 from app.models.savings_goal import SavingsGoal  # noqa: F401

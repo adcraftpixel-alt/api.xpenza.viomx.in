@@ -10,7 +10,7 @@ from app.api.v1.expenses.schemas import CreateExpenseRequest, UpdateExpenseReque
 from app.api.v1.expenses.service import ExpenseService
 from app.api.v1.expenses.sms_parser import sms_parser
 from app.api.v1.expenses.quick_parser import parse_quick_text
-from app.api.v1.expenses.ai_categorizer import suggest_category
+from app.api.v1.expenses.ai_categorizer import suggest_category, learn_keyword
 from app.utils.response import success
 
 
@@ -24,6 +24,13 @@ class QuickParseRequest(BaseModel):
 
 class SuggestCategoryRequest(BaseModel):
     description: str  # expense description in any language
+    family_group_id: Optional[str] = None  # set => resolve against the shared family tree
+
+
+class LearnCategoryRequest(BaseModel):
+    description: str
+    category_id: str  # the node the user confirmed/corrected to
+    family_group_id: Optional[str] = None
 
 
 class QuickAddItem(BaseModel):
@@ -127,8 +134,28 @@ def suggest_expense_category(
       "kiraya diya"        → your House Rent / EMI category
       "SIP kati aaj"       → your Investments category
     """
-    result = suggest_category(request.description, str(current_user.id), db)
+    result = suggest_category(
+        request.description, str(current_user.id), db,
+        family_group_id=request.family_group_id,
+    )
     return success(result)
+
+
+@router.post("/learn-category")
+def learn_expense_category(
+    request: LearnCategoryRequest,
+    current_user=Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Record a user's category correction as a keyword alias so the same item
+    name resolves to that category instantly next time (self-learning).
+    """
+    saved = learn_keyword(
+        db, request.description, request.category_id, str(current_user.id),
+        family_group_id=request.family_group_id,
+    )
+    return success({"learned": saved})
 
 
 _GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")

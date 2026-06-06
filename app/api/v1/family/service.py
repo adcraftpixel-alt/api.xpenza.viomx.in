@@ -126,6 +126,11 @@ class FamilyService:
         )
         db.add(admin)
         db.commit()
+
+        # Seed the shared family category tree (same defaults, scoped to the group)
+        from app.api.v1.categories.default_tree import seed_category_tree
+        seed_category_tree(db, user_id=user_id, family_group_id=str(group.id))
+
         db.refresh(group)
         return _group_to_dict(group)
 
@@ -154,6 +159,10 @@ class FamilyService:
                 joined_at=datetime.utcnow(),
             ))
             db.flush()
+
+            # Seed the shared family category tree for the newly auto-created group
+            from app.api.v1.categories.default_tree import seed_category_tree
+            seed_category_tree(db, user_id=user_id, family_group_id=str(group.id))
 
         # ── Validation: can't invite your own number ──────────────────────
         inviter = db.query(User).filter(User.id == user_id).first()

@@ -1,23 +1,11 @@
 from typing import List, Optional
 from sqlalchemy.orm import Session
 from app.models.category import Category
+from app.models.category_keyword import CategoryKeyword
 from app.core.exceptions import NotFoundError, ForbiddenError, ConflictError, ValidationError
 from app.api.v1.categories.schemas import CreateCategoryRequest, UpdateCategoryRequest
 
 MAX_LEVEL = 2  # 0=root, 1=sub-parent, 2=child — three levels max
-
-DEFAULT_CATEGORIES = [
-    {"name": "Food & Dining",     "icon": "🍕", "color": "#EF4444"},
-    {"name": "Groceries",         "icon": "🛒", "color": "#22C55E"},
-    {"name": "Transport",         "icon": "🚗", "color": "#3B82F6"},
-    {"name": "Shopping",          "icon": "👕", "color": "#8B5CF6"},
-    {"name": "Bills & Utilities", "icon": "⚡", "color": "#F59E0B"},
-    {"name": "Health",            "icon": "🏥", "color": "#10B981"},
-    {"name": "Entertainment",     "icon": "🎬", "color": "#EC4899"},
-    {"name": "Education",         "icon": "🎓", "color": "#0EA5E9"},
-    {"name": "Travel",            "icon": "✈️", "color": "#14B8A6"},
-    {"name": "General",           "icon": "💰", "color": "#6B7280"},
-]
 
 
 def _cat_to_dict(c: Category, include_children: bool = False) -> dict:
@@ -31,6 +19,11 @@ def _cat_to_dict(c: Category, include_children: bool = False) -> dict:
         "level":      c.level,
         "is_default": c.is_default,
         "created_at": c.created_at.isoformat() if c.created_at else None,
+        # Keyword aliases that drive chat auto-categorisation for this node
+        "keywords": [
+            {"id": str(k.id), "keyword": k.keyword, "source": k.source}
+            for k in (c.keywords or [])
+        ],
     }
     if include_children:
         d["children"] = [_cat_to_dict(ch, include_children=True) for ch in c.children]
@@ -41,25 +34,39 @@ class CategoryService:
 
     # ── Flat list (all user categories, no tree) ──────────────────────────────
 
-    def list(self, db: Session, user_id: str) -> List[dict]:
-        cats = (
-            db.query(Category)
-            .filter(Category.user_id == user_id)
-            .order_by(Category.level, Category.is_default.desc(), Category.name)
-            .all()
-        )
+    def list(
+        self, db: Session, user_id: str, family_group_id: Optional[str] = None
+    ) -> List[dict]:
+        q = db.query(Category)
+        if family_group_id:
+            q = q.filter(Category.family_group_id == family_group_id)
+        else:
+            q = q.filter(
+                Category.user_id == user_id, Category.family_group_id.is_(None)
+            )
+        cats = q.order_by(
+            Category.level, Category.is_default.desc(), Category.name
+        ).all()
         return [_cat_to_dict(c) for c in cats]
 
     # ── Hierarchical tree (roots + nested children) ───────────────────────────
 
-    def list_tree(self, db: Session, user_id: str) -> List[dict]:
-        """Return only root-level categories (level=0) with children nested inside."""
-        roots = (
-            db.query(Category)
-            .filter(Category.user_id == user_id, Category.level == 0)
-            .order_by(Category.is_default.desc(), Category.name)
-            .all()
-        )
+    def list_tree(
+        self, db: Session, user_id: str, family_group_id: Optional[str] = None
+    ) -> List[dict]:
+        """Return only root-level categories (level=0) with children nested inside.
+
+        Personal scope (family_group_id=None) excludes shared family categories;
+        family scope returns the shared tree for that group.
+        """
+        q = db.query(Category).filter(Category.level == 0)
+        if family_group_id:
+            q = q.filter(Category.family_group_id == family_group_id)
+        else:
+            q = q.filter(
+                Category.user_id == user_id, Category.family_group_id.is_(None)
+            )
+        roots = q.order_by(Category.is_default.desc(), Category.name).all()
         return [_cat_to_dict(r, include_children=True) for r in roots]
 
     # ── Create ────────────────────────────────────────────────────────────────
@@ -207,29 +214,56 @@ class CategoryService:
                 ids.append(str(gc_id))
         return ids
 
+    # ── Keyword aliases ─────────────────────────────────────────────────────────
+
+    def _owned_category(self, db: Session, category_id: str, user_id: str) -> Category:
+        """Fetch a category the caller is allowed to manage (personal or own family)."""
+        cat = db.query(Category).filter(Category.id == category_id).first()
+        if not cat:
+            raise NotFoundError("Category not found")
+        if cat.family_group_id:
+            # Shared family category — caller must belong to that group
+            from app.api.v1.family.service import FamilyService
+            group = FamilyService()._get_user_group(db, user_id)
+            if not group or str(group.id) != str(cat.family_group_id):
+                raise ForbiddenError("Access denied")
+        elif str(cat.user_id) != str(user_id):
+            raise ForbiddenError("Access denied")
+        return cat
+
+    def add_keyword(self, db: Session, category_id: str, user_id: str, keyword: str) -> dict:
+        self._owned_category(db, category_id, user_id)
+        kw = " ".join((keyword or "").lower().split())
+        if not kw:
+            raise ValidationError("Keyword cannot be empty")
+        if len(kw) > 100:
+            raise ValidationError("Keyword too long")
+        existing = (
+            db.query(CategoryKeyword)
+            .filter(CategoryKeyword.category_id == category_id, CategoryKeyword.keyword == kw)
+            .first()
+        )
+        if existing:
+            raise ConflictError(f"Keyword '{kw}' already exists for this category")
+        row = CategoryKeyword(category_id=category_id, keyword=kw, source="user")
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+        return {"id": str(row.id), "keyword": row.keyword, "source": row.source}
+
+    def delete_keyword(self, db: Session, keyword_id: str, user_id: str) -> bool:
+        row = db.query(CategoryKeyword).filter(CategoryKeyword.id == keyword_id).first()
+        if not row:
+            raise NotFoundError("Keyword not found")
+        # Validate the caller owns the parent category
+        self._owned_category(db, str(row.category_id), user_id)
+        db.delete(row)
+        db.commit()
+        return True
+
     # ── Seed defaults ─────────────────────────────────────────────────────────
 
     def seed_defaults(self, db: Session, user_id: str) -> int:
-        existing_names = {
-            row.name
-            for row in db.query(Category.name)
-            .filter(Category.user_id == user_id, Category.is_default == True)  # noqa: E712
-            .all()
-        }
-        created = 0
-        for defaults in DEFAULT_CATEGORIES:
-            if defaults["name"] not in existing_names:
-                cat = Category(
-                    user_id=user_id,
-                    parent_id=None,
-                    name=defaults["name"],
-                    icon=defaults["icon"],
-                    color=defaults["color"],
-                    level=0,
-                    is_default=False,
-                )
-                db.add(cat)
-                created += 1
-        if created:
-            db.commit()
-        return created
+        """Seed the canonical 3-level default tree + keyword aliases (personal scope)."""
+        from app.api.v1.categories.default_tree import seed_category_tree
+        return seed_category_tree(db, user_id=user_id, family_group_id=None)

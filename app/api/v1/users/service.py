@@ -4,25 +4,11 @@ from sqlalchemy.orm import Session
 
 from app.models.user import User
 from app.models.user_preference import UserPreference
-from app.models.category import Category
 from app.core.exceptions import NotFoundError, ConflictError
 from app.api.v1.users.schemas import UpdateUserRequest, OnboardingRequest
 from app.utils.storage import upload_to_s3, generate_unique_filename
 
 logger = logging.getLogger(__name__)
-
-DEFAULT_CATEGORIES = {
-    "food": {"name": "Food & Dining", "icon": "🍔", "color": "#FF6B6B"},
-    "transport": {"name": "Transport", "icon": "🚗", "color": "#4ECDC4"},
-    "shopping": {"name": "Shopping", "icon": "🛍️", "color": "#45B7D1"},
-    "bills": {"name": "Bills & Utilities", "icon": "💡", "color": "#96CEB4"},
-    "health": {"name": "Health & Fitness", "icon": "🏥", "color": "#FFEAA7"},
-    "entertainment": {"name": "Entertainment", "icon": "🎬", "color": "#DDA0DD"},
-    "education": {"name": "Education", "icon": "📚", "color": "#98D8C8"},
-    "travel": {"name": "Travel", "icon": "✈️", "color": "#F7DC6F"},
-    "groceries": {"name": "Groceries", "icon": "🛒", "color": "#82E0AA"},
-    "others": {"name": "Others", "icon": "📦", "color": "#AEB6BF"},
-}
 
 
 class UserService:
@@ -92,33 +78,13 @@ class UserService:
         if hasattr(pref, "pain_point"):
             pref.pain_point = data.pain_point
 
-        # Create selected default categories
-        existing_names = {c.name for c in db.query(Category).filter(Category.user_id == user.id).all()}
-        for key in data.selected_categories:
-            cat_data = DEFAULT_CATEGORIES.get(key.lower())
-            if cat_data and cat_data["name"] not in existing_names:
-                cat = Category(
-                    user_id=user.id,
-                    name=cat_data["name"],
-                    icon=cat_data["icon"],
-                    color=cat_data["color"],
-                    is_default=True,
-                )
-                db.add(cat)
-
-        # If no categories selected, create all defaults
-        if not data.selected_categories and not existing_names:
-            for key, cat_data in DEFAULT_CATEGORIES.items():
-                cat = Category(
-                    user_id=user.id,
-                    name=cat_data["name"],
-                    icon=cat_data["icon"],
-                    color=cat_data["color"],
-                    is_default=True,
-                )
-                db.add(cat)
-
         db.commit()
+
+        # Seed the canonical 3-level default tree + keyword aliases (personal scope).
+        # Idempotent — attaches sub-trees under any existing roots without duplicating.
+        from app.api.v1.categories.default_tree import seed_category_tree
+        seed_category_tree(db, user_id=str(user.id), family_group_id=None)
+
         db.refresh(user)
         return user
 

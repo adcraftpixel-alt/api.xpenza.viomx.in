@@ -11,6 +11,10 @@ class Category(Base):
 
     id         = Column(UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid.uuid4()))
     user_id    = Column(UUID(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    # Set => this category belongs to a shared family tree; NULL => personal category
+    family_group_id = Column(
+        UUID(as_uuid=False), ForeignKey("family_groups.id", ondelete="CASCADE"), nullable=True
+    )
     parent_id  = Column(UUID(as_uuid=False), ForeignKey("categories.id", ondelete="CASCADE"), nullable=True)
     name       = Column(String(100), nullable=False)
     icon       = Column(String(100), nullable=True)
@@ -22,6 +26,12 @@ class Category(Base):
     user     = relationship("User", back_populates="categories")
     expenses = relationship("Expense", back_populates="category")
     budgets  = relationship("Budget", back_populates="category")
+    keywords = relationship(
+        "CategoryKeyword",
+        back_populates="category",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
 
     # Self-referential tree (adjacency list)
     children = relationship(
