@@ -85,12 +85,15 @@ def list_expenses(
     payment_method: Optional[str] = None,
     min_amount: Optional[float] = None,
     max_amount: Optional[float] = None,
+    shared: bool = Query(default=False,
+                         description="True = family expenses, False = personal"),
     current_user=Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ):
     result = service.list(
         db, str(current_user.id), page, page_size,
-        category_id, start_date, end_date, payment_method, min_amount, max_amount
+        category_id, start_date, end_date, payment_method, min_amount, max_amount,
+        shared=shared,
     )
     return success(result)
 

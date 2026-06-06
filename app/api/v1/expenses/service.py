@@ -170,12 +170,24 @@ class ExpenseService:
         payment_method: Optional[str] = None,
         min_amount: Optional[float] = None,
         max_amount: Optional[float] = None,
+        shared: bool = False,
     ) -> dict:
-        # Personal view: exclude expenses that belong to a family group
-        query = db.query(Expense).filter(
-            Expense.user_id == user_id,
-            Expense.family_group_id.is_(None),
-        )
+        if shared:
+            # Family view: only expenses tagged to the user's family group
+            from app.api.v1.family.service import FamilyService
+            group = FamilyService()._get_user_group(db, user_id)
+            if not group:
+                return {"items": [], "total": 0, "page": page,
+                        "page_size": page_size, "total_pages": 0}
+            query = db.query(Expense).filter(
+                Expense.family_group_id == str(group.id),
+            )
+        else:
+            # Personal view: exclude expenses that belong to a family group
+            query = db.query(Expense).filter(
+                Expense.user_id == user_id,
+                Expense.family_group_id.is_(None),
+            )
         if category_id:
             query = query.filter(Expense.category_id == category_id)
         if start_date:
