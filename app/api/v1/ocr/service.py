@@ -8,12 +8,13 @@ from sqlalchemy.orm import Session
 
 import httpx
 
+from app.config import settings
 from app.models.ocr_scan import OCRScan
 from app.utils.storage import upload_to_s3, generate_unique_filename
 
 logger = logging.getLogger(__name__)
 
-_GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+_GROQ_API_KEY = settings.GROQ_API_KEY or os.getenv("GROQ_API_KEY", "")
 _GROQ_VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
 
 _VISION_PROMPT = (

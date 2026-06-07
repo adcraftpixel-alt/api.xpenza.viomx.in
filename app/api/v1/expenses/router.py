@@ -11,6 +11,7 @@ from app.api.v1.expenses.service import ExpenseService
 from app.api.v1.expenses.sms_parser import sms_parser
 from app.api.v1.expenses.quick_parser import parse_quick_text
 from app.api.v1.expenses.ai_categorizer import suggest_category, learn_keyword
+from app.config import settings
 from app.utils.response import success
 
 
@@ -158,8 +159,8 @@ def learn_expense_category(
     return success({"learned": saved})
 
 
-_GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-_GROQ_MODEL = "llama-3.1-8b-instant"
+_GROQ_API_KEY = settings.GROQ_API_KEY or os.getenv("GROQ_API_KEY", "")
+_GROQ_MODEL = "llama-3.3-70b-versatile"
 
 
 @router.post("/ai-parse")

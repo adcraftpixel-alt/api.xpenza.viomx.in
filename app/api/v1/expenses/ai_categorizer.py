@@ -26,13 +26,18 @@ import httpx
 from sqlalchemy import and_
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.models.category import Category
 from app.models.category_keyword import CategoryKeyword
 
 logger = logging.getLogger(__name__)
 
-_GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-_GROQ_MODEL   = "llama-3.1-8b-instant"
+# Read via settings so the key is picked up from .env (pydantic) AND real env
+# vars in production — os.getenv alone misses the .env file (no dotenv loader).
+_GROQ_API_KEY = settings.GROQ_API_KEY or os.getenv("GROQ_API_KEY", "")
+# 70b-versatile is far more accurate at this task than 8b-instant (which often
+# returned "General" for obvious items and even echoed the prompt placeholder).
+_GROQ_MODEL   = "llama-3.3-70b-versatile"
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -42,7 +47,14 @@ def _norm(s: str) -> str:
 
 
 def _tokens(s: str) -> set[str]:
-    return set(re.findall(r"\w+", (s or "").lower()))
+    s = (s or "").lower()
+    toks = set(re.findall(r"\w+", s))
+    # Hyphen/slash-joined terms also match their concatenated form so a typed
+    # "x-ray" hits the "xray" keyword and "t-shirt" hits "tshirt".
+    for w in re.findall(r"\w[\w\-/]*\w", s):
+        if "-" in w or "/" in w:
+            toks.add(re.sub(r"[-/]", "", w))
+    return toks
 
 
 def _scope_filter(user_id: str, family_group_id: str | None):
@@ -299,7 +311,12 @@ Respond with ONLY this JSON (no markdown):
                 raw = raw[4:]
         raw = raw.strip()
 
-        data = json.loads(raw)
+        # The model sometimes adds prose around/after the JSON; extract the
+        # first {...} object so a trailing explanation doesn't break parsing.
+        match = re.search(r"\{[^{}]*\}", raw, re.DOTALL)
+        if not match:
+            return None
+        data = json.loads(match.group(0))
         cat_id = data.get("category_id")
         sub_id = data.get("subcategory_id")
 
