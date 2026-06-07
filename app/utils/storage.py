@@ -10,14 +10,24 @@ LOCAL_UPLOAD_DIR = Path("/tmp/aifinanceos_uploads")
 LOCAL_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def _save_local(filename: str, file_bytes: bytes) -> str:
+    """Write bytes under LOCAL_UPLOAD_DIR, creating any nested parent dirs.
+
+    `filename` may contain slashes (e.g. "avatars/<uuid>/x.jpg"), so the parent
+    directory must be created first — otherwise write_bytes raises
+    FileNotFoundError (this caused 500s on the avatar upload).
+    """
+    local_path = LOCAL_UPLOAD_DIR / filename
+    local_path.parent.mkdir(parents=True, exist_ok=True)
+    local_path.write_bytes(file_bytes)
+    logger.info(f"[STORAGE STUB] Saved locally: {local_path}")
+    return f"/local-uploads/{filename}"
+
+
 def upload_to_s3(file_bytes: bytes, filename: str, content_type: str = "application/octet-stream") -> str:
     """Upload file to S3. Falls back to local storage if credentials are missing."""
     if not settings.AWS_ACCESS_KEY_ID or settings.AWS_ACCESS_KEY_ID == "...":
-        # Fallback: save locally
-        local_path = LOCAL_UPLOAD_DIR / filename
-        local_path.write_bytes(file_bytes)
-        logger.info(f"[STORAGE STUB] Saved locally: {local_path}")
-        return f"/local-uploads/{filename}"
+        return _save_local(filename, file_bytes)
 
     try:
         import boto3
@@ -39,10 +49,7 @@ def upload_to_s3(file_bytes: bytes, filename: str, content_type: str = "applicat
         return url
     except Exception as e:
         logger.error(f"S3 upload failed: {e}")
-        # Fallback to local
-        local_path = LOCAL_UPLOAD_DIR / filename
-        local_path.write_bytes(file_bytes)
-        return f"/local-uploads/{filename}"
+        return _save_local(filename, file_bytes)
 
 
 def get_presigned_url(key: str, expires_in: int = 3600) -> str:

@@ -15,6 +15,26 @@ from app.utils.storage import upload_to_s3, generate_unique_filename
 logger = logging.getLogger(__name__)
 
 
+def _resize_avatar(data: bytes) -> bytes:
+    """Shrink the avatar to a small square JPEG so it stays tiny regardless of
+    client (image_picker's resize is a no-op on web). Returns the original
+    bytes if the image can't be processed."""
+    try:
+        from io import BytesIO
+        from PIL import Image
+
+        img = Image.open(BytesIO(data)).convert("RGB")
+        img.thumbnail((512, 512))
+        buf = BytesIO()
+        img.save(buf, format="JPEG", quality=80)
+        return buf.getvalue()
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("Avatar resize failed, storing original: %s", exc)
+        return data
+
+logger = logging.getLogger(__name__)
+
+
 class UserService:
     def get_me(self, user: User, db: Optional[Session] = None) -> dict:
         data = {
@@ -123,9 +143,22 @@ class UserService:
         db.refresh(user)
         return user
 
-    def upload_avatar(self, db: Session, user: User, file_bytes: bytes, filename: str) -> str:
-        unique_name = f"avatars/{user.id}/{generate_unique_filename(filename)}"
+    def upload_avatar(
+        self,
+        db: Session,
+        user: User,
+        file_bytes: bytes,
+        filename: str,
+        base_url: Optional[str] = None,
+    ) -> str:
+        # Compress/resize server-side so the stored avatar is always small.
+        file_bytes = _resize_avatar(file_bytes)
+        unique_name = f"avatars/{user.id}/{generate_unique_filename('avatar.jpg')}"
         url = upload_to_s3(file_bytes, unique_name, "image/jpeg")
+        # Local fallback returns a relative path; make it absolute so the app
+        # can load it directly via NetworkImage.
+        if url.startswith("/") and base_url:
+            url = base_url.rstrip("/") + url
         user.avatar_url = url
         db.commit()
         return url

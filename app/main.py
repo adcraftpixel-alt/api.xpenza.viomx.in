@@ -54,6 +54,14 @@ _static_dir = os.path.join(os.path.dirname(__file__), "api", "static")
 if os.path.isdir(_static_dir):
     app.mount("/static", StaticFiles(directory=_static_dir), name="static")
 
+# Serve locally-stored uploads (avatars, receipts) when S3 isn't configured.
+from app.utils.storage import LOCAL_UPLOAD_DIR  # noqa: E402
+app.mount(
+    "/local-uploads",
+    StaticFiles(directory=str(LOCAL_UPLOAD_DIR)),
+    name="local-uploads",
+)
+
 
 # Health endpoint
 @app.get("/health", tags=["Health"])

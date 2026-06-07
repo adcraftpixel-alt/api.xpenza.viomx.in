@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, UploadFile, File
+from fastapi import APIRouter, Depends, UploadFile, File, Request
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.core.dependencies import get_current_active_user
@@ -84,12 +84,16 @@ def update_preferences(
 
 @router.post("/me/avatar")
 async def upload_avatar(
+    request: Request,
     file: UploadFile = File(...),
     current_user=Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ):
     file_bytes = await file.read()
-    url = service.upload_avatar(db, current_user, file_bytes, file.filename)
+    url = service.upload_avatar(
+        db, current_user, file_bytes, file.filename,
+        base_url=str(request.base_url),
+    )
     return success({"avatar_url": url}, message="Avatar uploaded")
 
 
