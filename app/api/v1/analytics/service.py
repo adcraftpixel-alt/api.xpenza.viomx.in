@@ -220,12 +220,14 @@ class AnalyticsService:
 
     def get_category_breakdown(self, user_id: str, month: int, year: int, db: Session) -> dict:
         """
-        Monthly spend rolled up the category tree into category → sub-category.
+        Monthly spend grouped as top-level category → the specific item it was
+        tagged to.
 
-        Every expense links to the DEEPEST category node (e.g. a level-2 "Milk").
-        Here we walk each spending node up to its root (the category) and its
-        level-1 ancestor (the sub-category), so the user can see, for a month,
-        how much went to each category and which sub-categories within it.
+        Every expense links to the DEEPEST category node it was filed under
+        (e.g. "Milk" under Groceries → Dairy Product, or "Water" under Bills &
+        Utilities). We group each expense under its ROOT category, and within
+        that show the actual tagged node as the sub-row — so the user can see
+        exactly how much went to milk, vegetables, water, etc. in a month.
         """
         from app.models.category import Category
 
@@ -250,20 +252,18 @@ class AnalyticsService:
         )
         cat_map = {str(c.id): c for c in cat_rows}
 
-        def _ancestry(node_id):
-            """Return (root, sub) Category nodes for a given deepest node id.
-
-            root = level-0 ancestor (the category); sub = level-1 ancestor
-            (the sub-category) or None when the node is itself a category."""
-            chain, cur, seen = [], cat_map.get(node_id), set()
+        def _root_and_node(node_id):
+            """Return (root, node): the level-0 ancestor (top category) and the
+            tagged node itself. `node` is None if the id is unknown."""
+            node = cat_map.get(node_id)
+            if node is None:
+                return None, None
+            root, cur, seen = node, node, set()
             while cur is not None and str(cur.id) not in seen:
-                chain.append(cur)
+                root = cur
                 seen.add(str(cur.id))
                 cur = cat_map.get(str(cur.parent_id)) if cur.parent_id else None
-            chain.reverse()  # root first
-            if not chain:
-                return None, None
-            return chain[0], (chain[1] if len(chain) > 1 else None)
+            return root, node
 
         # 3) Accumulate into category → sub-category buckets.
         cats: dict = {}
@@ -271,7 +271,7 @@ class AnalyticsService:
         for r in rows:
             amount = float(r.amount or 0)
             cnt = int(r.cnt or 0)
-            root, sub = (None, None) if r.category_id is None else _ancestry(str(r.category_id))
+            root, node = (None, None) if r.category_id is None else _root_and_node(str(r.category_id))
 
             if root is None:
                 key, name, color, icon = UNCATEGORIZED, UNCATEGORIZED, "#6B7280", None
@@ -285,9 +285,10 @@ class AnalyticsService:
             bucket["amount"] += amount
             bucket["transaction_count"] += cnt
 
-            # Sub-category label: the level-1 ancestor, else "(uncategorized)" for
-            # spend booked directly on the category with no sub-category.
-            sub_name = sub.name if sub is not None else "General"
+            # Sub-row = the specific node the expense was tagged to (e.g. "Milk",
+            # "Vegetables", "Water"). "General" when booked straight on the top
+            # category with nothing more specific.
+            sub_name = node.name if (node is not None and node is not root) else "General"
             sub_bucket = bucket["_subs"].setdefault(sub_name, {
                 "name": sub_name, "amount": 0.0, "transaction_count": 0,
             })
