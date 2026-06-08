@@ -193,10 +193,7 @@ class AuthService:
                 "OTP service is temporarily unavailable. Please try again shortly."
             )
 
-        body = (
-            f"Your AI Finance OS verification code is {otp}. "
-            f"It expires in {OTP_TTL_SECONDS // 60} minutes."
-        )
+        body = f"Rupexi OTP: {otp}. Valid for {OTP_TTL_SECONDS // 60} minutes."
         if sms_configured():
             # Let delivery errors propagate so callers can surface them.
             send_sms(phone, body)
@@ -245,7 +242,7 @@ class AuthService:
                 logger.warning(f"OTP email failed: {e}")
         else:
             # Phone number — dispatch via Twilio SMS.
-            body = f"Your AI Finance OS password reset code is {otp}. It expires in 1 hour."
+            body = f"Rupexi password reset code: {otp}. Valid for 1 hour."
             if sms_configured():
                 try:
                     send_sms(identifier, body)
