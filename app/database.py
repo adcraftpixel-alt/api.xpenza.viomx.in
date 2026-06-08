@@ -28,7 +28,7 @@ def create_tables():
         user, user_preference, category, category_keyword, expense, budget,
         savings_goal, subscription, ai_insight, notification,
         billing, payment_history, chat, ocr_scan, family_group, wallet,
-        budget_month_amount
+        budget_month_amount, otp_code
     )
     Base.metadata.create_all(bind=engine)
 

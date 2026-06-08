@@ -91,7 +91,7 @@ def send_otp(data: ResendOTPRequest, db: Session = Depends(get_db)):
         db.commit()
 
     try:
-        service.send_otp(data.phone)
+        service.send_otp(data.phone, db)
     except OTPServiceError as e:
         raise HTTPException(status_code=503, detail=str(e))
     except (SMSNotConfigured, SMSDeliveryError) as e:
@@ -100,9 +100,9 @@ def send_otp(data: ResendOTPRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/resend-otp")
-def resend_otp(data: ResendOTPRequest):
+def resend_otp(data: ResendOTPRequest, db: Session = Depends(get_db)):
     try:
-        service.send_otp(data.phone)
+        service.send_otp(data.phone, db)
     except OTPServiceError as e:
         raise HTTPException(status_code=503, detail=str(e))
     except (SMSNotConfigured, SMSDeliveryError) as e:

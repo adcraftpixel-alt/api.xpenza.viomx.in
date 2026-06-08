@@ -1,6 +1,7 @@
 import random
 import string
 import logging
+from datetime import datetime, timedelta
 from typing import Optional
 
 import redis as redis_lib
@@ -39,6 +40,88 @@ try:
     redis_client = redis_lib.from_url(settings.REDIS_URL, decode_responses=True)
 except Exception:
     redis_client = None
+
+
+def _redis_key(identifier: str, purpose: str) -> str:
+    prefix = "pwd_reset_otp" if purpose == "pwd_reset" else "otp"
+    return f"{prefix}:{identifier}"
+
+
+def store_otp(identifier: str, code: str, ttl: int, purpose: str, db: Session) -> None:
+    """Persist an OTP for later verification.
+
+    Prefers Redis (fast, auto-expiring); falls back to the Postgres ``otp_codes``
+    table when Redis is unavailable so OTP works without a Redis instance.
+    Raises ``OTPServiceError`` only if BOTH stores fail.
+    """
+    if redis_client is not None:
+        try:
+            redis_client.setex(_redis_key(identifier, purpose), ttl, code)
+            return
+        except Exception as e:
+            logger.warning(f"Redis OTP store failed, falling back to Postgres: {e}")
+
+    from app.models.otp_code import OtpCode
+    try:
+        db.query(OtpCode).filter(
+            OtpCode.identifier == identifier, OtpCode.purpose == purpose
+        ).delete()
+        db.add(OtpCode(
+            identifier=identifier,
+            purpose=purpose,
+            code=code,
+            expires_at=datetime.utcnow() + timedelta(seconds=ttl),
+        ))
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        logger.error(f"OTP storage failed (Redis + Postgres both unavailable): {e}")
+        raise OTPServiceError(
+            "OTP service is temporarily unavailable. Please try again shortly."
+        )
+
+
+def consume_otp(identifier: str, code: str, purpose: str, db: Session) -> bool:
+    """Validate a submitted OTP and invalidate it. True if it matched and was unexpired."""
+    # Try Redis first.
+    if redis_client is not None:
+        try:
+            key = _redis_key(identifier, purpose)
+            stored = redis_client.get(key)
+            if stored is not None:
+                if stored == code:
+                    redis_client.delete(key)
+                    return True
+                return False
+            # Not in Redis — may have been stored in Postgres; fall through.
+        except Exception as e:
+            logger.warning(f"Redis OTP read failed, trying Postgres: {e}")
+
+    from app.models.otp_code import OtpCode
+    try:
+        row = (
+            db.query(OtpCode)
+            .filter(
+                OtpCode.identifier == identifier,
+                OtpCode.purpose == purpose,
+                OtpCode.code == code,
+            )
+            .order_by(OtpCode.created_at.desc())
+            .first()
+        )
+        if not row:
+            return False
+        valid = row.expires_at >= datetime.utcnow()
+        # Consume all codes for this identifier+purpose regardless of expiry.
+        db.query(OtpCode).filter(
+            OtpCode.identifier == identifier, OtpCode.purpose == purpose
+        ).delete()
+        db.commit()
+        return valid
+    except Exception as e:
+        db.rollback()
+        logger.error(f"OTP verification failed (Postgres): {e}")
+        return False
 
 
 def _build_token_response(user: User) -> TokenResponse:
@@ -88,7 +171,7 @@ class AuthService:
 
         if data.phone:
             try:
-                self.send_otp(data.phone)
+                self.send_otp(data.phone, db)
             except Exception as e:
                 logger.warning(f"OTP send failed: {e}")
 
@@ -109,16 +192,10 @@ class AuthService:
         return _build_token_response(user)
 
     def verify_otp(self, db: Session, phone: str, otp: str) -> Optional[TokenResponse]:
-        # OTP is verified strictly against the code stored in Redis — no static
-        # bypass codes.
-        if not redis_client:
-            logger.error("Redis not available — cannot verify OTP")
+        # OTP is verified strictly against the stored code (Redis or Postgres) —
+        # no static bypass codes.
+        if not consume_otp(phone, otp, "login", db):
             return None
-        key = f"otp:{phone}"
-        stored = redis_client.get(key)
-        if not stored or stored != otp:
-            return None
-        redis_client.delete(key)
 
         # Find or auto-create user for this phone
         user = db.query(User).filter(User.phone == phone).first()
@@ -151,7 +228,7 @@ class AuthService:
                 raise ConflictError("Phone already registered")
             # Unverified — resend OTP and return existing user
             try:
-                self.send_otp(data.phone)
+                self.send_otp(data.phone, db)
             except Exception as e:
                 logger.warning(f"OTP send failed: {e}")
             return existing
@@ -172,26 +249,19 @@ class AuthService:
         db.refresh(user)
 
         try:
-            self.send_otp(data.phone)
+            self.send_otp(data.phone, db)
         except Exception as e:
             logger.warning(f"OTP send failed: {e}")
 
         return user
 
-    def send_otp(self, phone: str) -> str:
+    def send_otp(self, phone: str, db: Session) -> str:
         otp = "".join(random.choices(string.digits, k=6))
 
-        # The OTP MUST be stored so verify_otp can check it later. If the store
-        # is unreachable, fail clearly rather than sending an un-verifiable code.
-        try:
-            if not redis_client:
-                raise RuntimeError("OTP store (Redis) is not configured")
-            redis_client.setex(f"otp:{phone}", OTP_TTL_SECONDS, otp)
-        except Exception as e:
-            logger.error(f"OTP storage failed (Redis unreachable?): {e}")
-            raise OTPServiceError(
-                "OTP service is temporarily unavailable. Please try again shortly."
-            )
+        # The OTP MUST be stored so verify_otp can check it later. store_otp uses
+        # Redis when available and falls back to Postgres, raising OTPServiceError
+        # only if both are unreachable.
+        store_otp(phone, otp, OTP_TTL_SECONDS, "login", db)
 
         body = f"Rupexi OTP: {otp}. Valid for {OTP_TTL_SECONDS // 60} minutes."
         if sms_configured():
@@ -229,12 +299,10 @@ class AuthService:
         # Phone: show last 4 digits
         return f"***{identifier[-4:]}" if len(identifier) >= 4 else "****"
 
-    def _send_otp_via_contact(self, identifier: str) -> str:
-        """Generate a 6-digit OTP, persist in Redis for 1 hour, and dispatch it."""
+    def _send_otp_via_contact(self, identifier: str, db: Session) -> str:
+        """Generate a 6-digit OTP, persist it for 1 hour, and dispatch it."""
         otp = "".join(random.choices(string.digits, k=6))
-        key = f"pwd_reset_otp:{identifier}"
-        if redis_client:
-            redis_client.setex(key, 3600, otp)  # 1-hour expiry
+        store_otp(identifier, otp, 3600, "pwd_reset", db)  # 1-hour expiry
         if "@" in identifier:
             try:
                 send_otp_email(identifier, otp)
@@ -257,21 +325,15 @@ class AuthService:
         user = self._find_user_by_email_or_phone(db, email_or_phone)
         # Always respond the same way to avoid user-enumeration
         if user:
-            self._send_otp_via_contact(email_or_phone.strip())
+            self._send_otp_via_contact(email_or_phone.strip(), db)
         return self._mask_contact(email_or_phone.strip())
 
     def reset_password(self, db: Session, email_or_phone: str, otp: str, new_password: str) -> bool:
         """Verify the OTP and update the user's password."""
         identifier = email_or_phone.strip()
-        key = f"pwd_reset_otp:{identifier}"
 
-        if redis_client:
-            stored = redis_client.get(key)
-            if not stored or stored != otp:
-                raise UnauthorizedError("Invalid or expired OTP")
-            redis_client.delete(key)
-        else:
-            logger.warning("Redis unavailable — skipping OTP check for password reset")
+        if not consume_otp(identifier, otp, "pwd_reset", db):
+            raise UnauthorizedError("Invalid or expired OTP")
 
         user = self._find_user_by_email_or_phone(db, identifier)
         if not user:
