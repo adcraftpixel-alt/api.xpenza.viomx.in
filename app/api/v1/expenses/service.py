@@ -111,6 +111,63 @@ class ExpenseService:
         self._check_and_notify(db, user_id, expense, ai_cat)
         return _expense_to_dict(expense)
 
+    def recategorize(self, db: Session, user_id: str) -> dict:
+        """Re-run the categorizer over the user's personal expenses and assign a
+        category_id whenever a keyword/LLM match is found.
+
+        Seeds the default category tree first (idempotent) so milk/veg/water etc.
+        exist to match against. Only expenses whose description matches a real
+        node are updated; vague ones are left as-is. Returns counts.
+        """
+        from app.api.v1.expenses.ai_categorizer import suggest_category
+        from app.api.v1.categories.default_tree import seed_category_tree
+
+        seed_category_tree(db, user_id=user_id, family_group_id=None)
+
+        # Only touch expenses that need fixing: uncategorized (NULL) or sitting in
+        # the catch-all "General" bucket. Leave already well-categorized ones be —
+        # this also avoids firing an LLM call per expense.
+        general = (
+            db.query(Category)
+            .filter(
+                Category.user_id == user_id,
+                Category.family_group_id.is_(None),
+                Category.name == "General",
+            )
+            .first()
+        )
+        general_id = str(general.id) if general else None
+
+        expenses = (
+            db.query(Expense)
+            .filter(
+                Expense.user_id == user_id,
+                Expense.family_group_id.is_(None),
+                (Expense.category_id.is_(None)) | (Expense.category_id == general_id),
+            )
+            .all()
+        )
+        updated = 0
+        for e in expenses:
+            text = (e.description or e.merchant or "").strip()
+            if not text:
+                continue
+            try:
+                suggestion = suggest_category(text, user_id, db, family_group_id=None)
+            except Exception:
+                continue
+            cid = suggestion.get("category_id")
+            # Only upgrade when the categorizer actually matched a node (not the
+            # "General" fallback) and it differs from what's already stored.
+            if suggestion.get("matched") and cid and cid != (str(e.category_id) if e.category_id else None):
+                e.category_id = cid
+                if suggestion.get("category_name"):
+                    e.ai_category = suggestion["category_name"]
+                updated += 1
+        db.commit()
+        self._trigger_budget_recalc(db, user_id)
+        return {"total_scanned": len(expenses), "updated": updated}
+
     def _check_and_notify(self, db: Session, user_id: str, expense: Expense, category_name: str) -> None:
         """Fire in-app notifications for large expenses and budget threshold breaches."""
         try:

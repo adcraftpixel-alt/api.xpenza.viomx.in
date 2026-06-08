@@ -59,6 +59,18 @@ def create_expense(
     return success(expense, message="Expense created")
 
 
+@router.post("/recategorize", summary="Re-run auto-categorization over existing expenses")
+def recategorize_expenses(
+    current_user=Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    """Seed the default category tree (if missing) and re-tag existing expenses
+    to specific categories/sub-items (e.g. Milk, Vegetables, Water) by matching
+    their descriptions. Returns how many were updated."""
+    result = service.recategorize(db, str(current_user.id))
+    return success(result, message=f"Re-categorized {result['updated']} expense(s)")
+
+
 @router.get("/summary")
 def get_summary(current_user=Depends(get_current_active_user), db: Session = Depends(get_db)):
     summary = service.get_summary(db, str(current_user.id))
