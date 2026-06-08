@@ -79,6 +79,21 @@ def get_categories(
     return success(data)
 
 
+@router.get("/category-breakdown")
+def get_category_breakdown(
+    month: int = Query(default=None, ge=1, le=12, description="Month number (1-12)"),
+    year: int = Query(default=None, description="4-digit year"),
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """Monthly spend rolled up the category tree into category → sub-category."""
+    now = datetime.utcnow()
+    mo = month if month is not None else now.month
+    yr = year if year is not None else now.year
+    data = analytics_service.get_category_breakdown(str(current_user.id), mo, yr, db)
+    return success(data)
+
+
 @router.get("/income-vs-expense")
 def get_income_vs_expense(
     months: int = Query(default=6, ge=1, le=24),

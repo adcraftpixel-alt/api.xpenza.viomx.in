@@ -218,6 +218,115 @@ class AnalyticsService:
             "year": year,
         }
 
+    def get_category_breakdown(self, user_id: str, month: int, year: int, db: Session) -> dict:
+        """
+        Monthly spend rolled up the category tree into category → sub-category.
+
+        Every expense links to the DEEPEST category node (e.g. a level-2 "Milk").
+        Here we walk each spending node up to its root (the category) and its
+        level-1 ancestor (the sub-category), so the user can see, for a month,
+        how much went to each category and which sub-categories within it.
+        """
+        from app.models.category import Category
+
+        month_start = date(year, month, 1)
+        _, days_in_month = monthrange(year, month)
+        month_end = date(year, month, days_in_month)
+
+        # 1) Spend grouped by the (deepest) category node the expense links to.
+        rows = db.execute(text("""
+            SELECT category_id, SUM(amount) AS amount, COUNT(*) AS cnt
+            FROM expenses
+            WHERE user_id = :uid AND family_group_id IS NULL
+              AND expense_date >= :start AND expense_date <= :end
+            GROUP BY category_id
+        """), {"uid": user_id, "start": month_start, "end": month_end}).fetchall()
+
+        # 2) Load every category in scope into a lookup so we can walk parents.
+        cat_rows = (
+            db.query(Category)
+            .filter(Category.user_id == user_id, Category.family_group_id.is_(None))
+            .all()
+        )
+        cat_map = {str(c.id): c for c in cat_rows}
+
+        def _ancestry(node_id):
+            """Return (root, sub) Category nodes for a given deepest node id.
+
+            root = level-0 ancestor (the category); sub = level-1 ancestor
+            (the sub-category) or None when the node is itself a category."""
+            chain, cur, seen = [], cat_map.get(node_id), set()
+            while cur is not None and str(cur.id) not in seen:
+                chain.append(cur)
+                seen.add(str(cur.id))
+                cur = cat_map.get(str(cur.parent_id)) if cur.parent_id else None
+            chain.reverse()  # root first
+            if not chain:
+                return None, None
+            return chain[0], (chain[1] if len(chain) > 1 else None)
+
+        # 3) Accumulate into category → sub-category buckets.
+        cats: dict = {}
+        UNCATEGORIZED = "Uncategorized"
+        for r in rows:
+            amount = float(r.amount or 0)
+            cnt = int(r.cnt or 0)
+            root, sub = (None, None) if r.category_id is None else _ancestry(str(r.category_id))
+
+            if root is None:
+                key, name, color, icon = UNCATEGORIZED, UNCATEGORIZED, "#6B7280", None
+            else:
+                key, name, color, icon = str(root.id), root.name, (root.color or "#6B7280"), root.icon
+
+            bucket = cats.setdefault(key, {
+                "category": name, "color": color, "icon": icon,
+                "amount": 0.0, "transaction_count": 0, "_subs": {},
+            })
+            bucket["amount"] += amount
+            bucket["transaction_count"] += cnt
+
+            # Sub-category label: the level-1 ancestor, else "(uncategorized)" for
+            # spend booked directly on the category with no sub-category.
+            sub_name = sub.name if sub is not None else "General"
+            sub_bucket = bucket["_subs"].setdefault(sub_name, {
+                "name": sub_name, "amount": 0.0, "transaction_count": 0,
+            })
+            sub_bucket["amount"] += amount
+            sub_bucket["transaction_count"] += cnt
+
+        grand_total = sum(b["amount"] for b in cats.values())
+
+        categories = []
+        for b in cats.values():
+            subs = sorted(b["_subs"].values(), key=lambda s: s["amount"], reverse=True)
+            cat_total = b["amount"]
+            categories.append({
+                "category": b["category"],
+                "color": b["color"],
+                "icon": b["icon"],
+                "amount": round(cat_total, 2),
+                "transaction_count": b["transaction_count"],
+                "percent": round((cat_total / grand_total * 100), 1) if grand_total > 0 else 0.0,
+                "subcategories": [
+                    {
+                        "name": s["name"],
+                        "amount": round(s["amount"], 2),
+                        "transaction_count": s["transaction_count"],
+                        # percent within the parent category
+                        "percent": round((s["amount"] / cat_total * 100), 1) if cat_total > 0 else 0.0,
+                    }
+                    for s in subs
+                ],
+            })
+
+        categories.sort(key=lambda c: c["amount"], reverse=True)
+        return {
+            "month": month,
+            "year": year,
+            "total": round(grand_total, 2),
+            "categories": categories,
+        }
+
     def get_income_vs_expense_summary(self, user_id: str, months: int, db: Session) -> dict:
         """Return last N months of income vs expense with totals."""
         from app.models.expense import Expense

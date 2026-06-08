@@ -24,8 +24,16 @@ from app.api.v1.auth.schemas import (
     PhoneRegisterRequest,
 )
 from app.utils.email import send_otp_email
+from app.utils.sms import send_sms, sms_configured, SMSNotConfigured, SMSDeliveryError
 
 logger = logging.getLogger(__name__)
+
+OTP_TTL_SECONDS = 300  # 5 minutes
+
+
+class OTPServiceError(Exception):
+    """Raised when the OTP store (Redis) is unavailable so the request can fail
+    with a clear message instead of an opaque 500."""
 
 try:
     redis_client = redis_lib.from_url(settings.REDIS_URL, decode_responses=True)
@@ -101,18 +109,16 @@ class AuthService:
         return _build_token_response(user)
 
     def verify_otp(self, db: Session, phone: str, otp: str) -> Optional[TokenResponse]:
-        # ── Test bypass: OTP starting with 1234 always succeeds ──────────────
-        is_bypass = otp.startswith("1234")
-
-        if not is_bypass:
-            if not redis_client:
-                logger.warning("Redis not available — rejecting OTP (no bypass)")
-                return None
-            key = f"otp:{phone}"
-            stored = redis_client.get(key)
-            if not stored or stored != otp:
-                return None
-            redis_client.delete(key)
+        # OTP is verified strictly against the code stored in Redis — no static
+        # bypass codes.
+        if not redis_client:
+            logger.error("Redis not available — cannot verify OTP")
+            return None
+        key = f"otp:{phone}"
+        stored = redis_client.get(key)
+        if not stored or stored != otp:
+            return None
+        redis_client.delete(key)
 
         # Find or auto-create user for this phone
         user = db.query(User).filter(User.phone == phone).first()
@@ -174,10 +180,29 @@ class AuthService:
 
     def send_otp(self, phone: str) -> str:
         otp = "".join(random.choices(string.digits, k=6))
-        if redis_client:
-            redis_client.setex(f"otp:{phone}", 300, otp)
-        logger.info(f"[OTP] {phone} => {otp}")
-        # In production: integrate SMS provider (Twilio, MSG91, etc.)
+
+        # The OTP MUST be stored so verify_otp can check it later. If the store
+        # is unreachable, fail clearly rather than sending an un-verifiable code.
+        try:
+            if not redis_client:
+                raise RuntimeError("OTP store (Redis) is not configured")
+            redis_client.setex(f"otp:{phone}", OTP_TTL_SECONDS, otp)
+        except Exception as e:
+            logger.error(f"OTP storage failed (Redis unreachable?): {e}")
+            raise OTPServiceError(
+                "OTP service is temporarily unavailable. Please try again shortly."
+            )
+
+        body = (
+            f"Your AI Finance OS verification code is {otp}. "
+            f"It expires in {OTP_TTL_SECONDS // 60} minutes."
+        )
+        if sms_configured():
+            # Let delivery errors propagate so callers can surface them.
+            send_sms(phone, body)
+        else:
+            # No Twilio credentials (e.g. local dev): log so the flow still works.
+            logger.warning(f"[OTP-DEV] Twilio not configured. {phone} => {otp}")
         return otp
 
     def refresh_token(self, db: Session, refresh_token_str: str) -> TokenResponse:
@@ -213,13 +238,21 @@ class AuthService:
         key = f"pwd_reset_otp:{identifier}"
         if redis_client:
             redis_client.setex(key, 3600, otp)  # 1-hour expiry
-        logger.info(f"[PWD RESET OTP] {identifier} => {otp}")
         if "@" in identifier:
             try:
                 send_otp_email(identifier, otp)
             except Exception as e:
                 logger.warning(f"OTP email failed: {e}")
-        # SMS dispatch for phone numbers is handled by the existing SMS provider integration
+        else:
+            # Phone number — dispatch via Twilio SMS.
+            body = f"Your AI Finance OS password reset code is {otp}. It expires in 1 hour."
+            if sms_configured():
+                try:
+                    send_sms(identifier, body)
+                except (SMSNotConfigured, SMSDeliveryError) as e:
+                    logger.warning(f"Password-reset OTP SMS failed: {e}")
+            else:
+                logger.warning(f"[PWD-RESET-DEV] Twilio not configured. {identifier} => {otp}")
         return otp
 
     def forgot_password(self, db: Session, email_or_phone: str) -> str:

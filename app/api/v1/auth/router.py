@@ -8,7 +8,8 @@ from app.api.v1.auth.schemas import (
     ResetPasswordRequest, SocialAuthRequest, LogoutRequest,
     PhoneRegisterRequest,
 )
-from app.api.v1.auth.service import AuthService
+from app.api.v1.auth.service import AuthService, OTPServiceError
+from app.utils.sms import SMSNotConfigured, SMSDeliveryError
 from app.utils.response import success, error
 
 router = APIRouter(tags=["Auth"])
@@ -67,9 +68,8 @@ def verify_otp(data: OTPVerifyRequest, db: Session = Depends(get_db)):
 @router.post("/send-otp", summary="Send OTP to phone — creates user if not exists")
 def send_otp(data: ResendOTPRequest, db: Session = Depends(get_db)):
     """
-    Phone-only auth: send OTP to the number.
+    Phone-only auth: send a one-time code to the number via SMS (Twilio).
     Automatically creates the user account if phone not registered.
-    For testing: OTP 1234 always works.
     """
     from app.models.user import User
     from app.models.user_preference import UserPreference
@@ -90,13 +90,23 @@ def send_otp(data: ResendOTPRequest, db: Session = Depends(get_db)):
         db.add(pref)
         db.commit()
 
-    service.send_otp(data.phone)
+    try:
+        service.send_otp(data.phone)
+    except OTPServiceError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except (SMSNotConfigured, SMSDeliveryError) as e:
+        raise HTTPException(status_code=502, detail=f"Could not send OTP: {e}")
     return success({"phone": data.phone}, message="OTP sent successfully")
 
 
 @router.post("/resend-otp")
 def resend_otp(data: ResendOTPRequest):
-    service.send_otp(data.phone)
+    try:
+        service.send_otp(data.phone)
+    except OTPServiceError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except (SMSNotConfigured, SMSDeliveryError) as e:
+        raise HTTPException(status_code=502, detail=f"Could not send OTP: {e}")
     return success(None, message="OTP sent")
 
 
