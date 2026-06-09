@@ -5,22 +5,23 @@ from app.models.expense import Expense
 from app.models.budget import Budget
 from app.models.savings_goal import SavingsGoal
 from app.models.category import Category
+from app.utils.period import current_period_window, prev_period_window
 
 
 class DashboardService:
     def get_summary(self, db: Session, user_id: str, user) -> dict:
         today = date.today()
-        this_month_start = today.replace(day=1)
-        if today.month == 1:
-            last_month_start = today.replace(year=today.year - 1, month=12, day=1)
-            last_month_end = this_month_start
-        else:
-            last_month_start = today.replace(month=today.month - 1, day=1)
-            last_month_end = this_month_start
+        # Financial cycle (respects the user's salary-day setting)
+        this_month_start, this_month_end = current_period_window(db, user_id, today)
+        last_month_start, last_month_end = prev_period_window(db, user_id, today)
 
         this_month = float(
             db.query(func.sum(Expense.amount))
-            .filter(Expense.user_id == user_id, Expense.expense_date >= this_month_start)
+            .filter(
+                Expense.user_id == user_id,
+                Expense.expense_date >= this_month_start,
+                Expense.expense_date <= this_month_end,
+            )
             .scalar() or 0
         )
         last_month = float(
@@ -28,7 +29,7 @@ class DashboardService:
             .filter(
                 Expense.user_id == user_id,
                 Expense.expense_date >= last_month_start,
-                Expense.expense_date < last_month_end,
+                Expense.expense_date <= last_month_end,
             )
             .scalar() or 0
         )
@@ -71,7 +72,11 @@ class DashboardService:
         cat_rows = (
             db.query(Category.name, func.sum(Expense.amount).label("total"))
             .join(Expense, Expense.category_id == Category.id, isouter=True)
-            .filter(Expense.user_id == user_id, Expense.expense_date >= this_month_start)
+            .filter(
+                Expense.user_id == user_id,
+                Expense.expense_date >= this_month_start,
+                Expense.expense_date <= this_month_end,
+            )
             .group_by(Category.name)
             .order_by(func.sum(Expense.amount).desc())
             .limit(5)

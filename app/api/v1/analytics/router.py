@@ -25,23 +25,30 @@ def get_monthly(
     # If month param given OR months==1 with no explicit month, use single-month detail
     # Only return list when months > 1 (for dashboard trend chips)
     if months > 1 and month is None:
-        from sqlalchemy import extract, func
+        from sqlalchemy import func
         from app.models.expense import Expense
+        from app.utils.period import (
+            get_month_start_day, period_window, resolve_anchor, prev_month,
+        )
+        start_day = get_month_start_day(db, str(current_user.id))
+        cy, cm = resolve_anchor(now.year, now.month, start_day, now.date())
         result = []
+        month_names = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                       'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
         for i in range(months - 1, -1, -1):
-            target = datetime(now.year, now.month - i, 1) if now.month - i > 0 \
-                else datetime(now.year - 1, now.month - i + 12, 1)
+            ty, tm = cy, cm
+            for _ in range(i):
+                ty, tm = prev_month(ty, tm)
+            win_start, win_end = period_window(ty, tm, start_day)
             total = db.query(func.sum(Expense.amount)).filter(
                 Expense.user_id == str(current_user.id),
-                extract('year', Expense.expense_date) == target.year,
-                extract('month', Expense.expense_date) == target.month,
+                Expense.expense_date >= win_start,
+                Expense.expense_date <= win_end,
             ).scalar() or 0.0
-            month_names = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-                           'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
             result.append({
-                'month': month_names[target.month],
-                'month_num': target.month,
-                'year': target.year,
+                'month': month_names[tm],
+                'month_num': tm,
+                'year': ty,
                 'total': float(total),
                 'total_expense': float(total),
             })

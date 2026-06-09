@@ -33,13 +33,20 @@ class ReportService:
         Returns a breakdown of expenses for a single calendar month.
         Income is taken from the user's monthly_income field.
         """
-        # All expenses for the month
+        # All expenses for the financial cycle labelled (year, month)
+        from app.utils.period import (
+            get_month_start_day, period_window, resolve_anchor,
+        )
+        from datetime import datetime as _dt
+        start_day = get_month_start_day(db, user_id)
+        ay, am = resolve_anchor(year, month, start_day, _dt.utcnow().date())
+        win_start, win_end = period_window(ay, am, start_day)
         expenses = (
             db.query(Expense)
             .filter(
                 Expense.user_id == user_id,
-                extract("month", Expense.expense_date) == month,
-                extract("year", Expense.expense_date) == year,
+                Expense.expense_date >= win_start,
+                Expense.expense_date <= win_end,
             )
             .all()
         )
@@ -52,10 +59,9 @@ class ReportService:
         total_income = float(user.monthly_income or 0) if user else 0.0
         saved = total_income - total_expense
 
-        # Days in month for avg_daily
-        import calendar as _cal
-        _, days_in_month = _cal.monthrange(year, month)
-        avg_daily = round(total_expense / days_in_month, 2)
+        # Days in the cycle for avg_daily
+        days_in_month = (win_end - win_start).days + 1
+        avg_daily = round(total_expense / days_in_month, 2) if days_in_month else 0.0
 
         # Category breakdown with category names resolved
         cat_totals: dict[str, float] = {}

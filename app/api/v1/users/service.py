@@ -66,11 +66,13 @@ class UserService:
         total_spent = db.query(func.coalesce(func.sum(Expense.amount), 0)).filter(
             Expense.user_id == user_id, Expense.family_group_id.is_(None),
         ).scalar() or 0
-        month_start = date.today().replace(day=1)
+        from app.utils.period import current_period_window
+        month_start, month_end = current_period_window(db, user_id)
         this_month = db.query(func.coalesce(func.sum(Expense.amount), 0)).filter(
             Expense.user_id == user_id,
             Expense.family_group_id.is_(None),
             Expense.expense_date >= month_start,
+            Expense.expense_date <= month_end,
         ).scalar() or 0
         expense_count = base.count()
         # Savings = total put aside across the user's savings goals

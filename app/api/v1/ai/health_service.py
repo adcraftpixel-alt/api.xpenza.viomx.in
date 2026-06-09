@@ -43,8 +43,9 @@ def get_health_score(db: Session, user_id: str, user: Any | None = None) -> dict
             tips       : list[str],
         }
     """
+    from app.utils.period import current_period_window
     today = date.today()
-    month_start = today.replace(day=1)
+    month_start, month_end = current_period_window(db, user_id, today)
     tips: list[str] = []
     breakdown: dict[str, Any] = {}
 
@@ -57,6 +58,7 @@ def get_health_score(db: Session, user_id: str, user: Any | None = None) -> dict
         .filter(
             Expense.user_id == user_id,
             Expense.expense_date >= month_start,
+            Expense.expense_date <= month_end,
         )
         .scalar() or 0
     )
@@ -248,12 +250,15 @@ def get_predictions(db: Session, user_id: str) -> dict:
         elif monthly_totals[0] < monthly_totals[1] * 0.90:
             trend = "decreasing"
 
-    # Top category for current month
+    # Top category for current month (financial cycle)
+    from app.utils.period import current_period_window
+    _cyc_start, _cyc_end = current_period_window(db, user_id, today)
     top_cat_row = (
         db.query(Expense.ai_category, func.sum(Expense.amount).label("total"))
         .filter(
             Expense.user_id == user_id,
-            Expense.expense_date >= today.replace(day=1),
+            Expense.expense_date >= _cyc_start,
+            Expense.expense_date <= _cyc_end,
         )
         .group_by(Expense.ai_category)
         .order_by(func.sum(Expense.amount).desc())

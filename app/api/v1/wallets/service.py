@@ -20,15 +20,16 @@ def _transaction_to_dict(t: WalletTransaction) -> dict:
     }
 
 
-def _compute_spent_this_month(db: Session, wallet_id: str) -> float:
-    now = datetime.utcnow()
+def _compute_spent_this_month(db: Session, wallet_id: str, user_id: str) -> float:
+    from app.utils.period import current_period_window
+    win_start, win_end = current_period_window(db, user_id)
     total = (
         db.query(func.sum(WalletTransaction.amount))
         .filter(
             WalletTransaction.wallet_id == wallet_id,
             WalletTransaction.type == "debit",
-            extract("year", WalletTransaction.transaction_date) == now.year,
-            extract("month", WalletTransaction.transaction_date) == now.month,
+            WalletTransaction.transaction_date >= win_start,
+            WalletTransaction.transaction_date <= win_end,
         )
         .scalar()
     )
@@ -37,7 +38,7 @@ def _compute_spent_this_month(db: Session, wallet_id: str) -> float:
 
 def _wallet_to_dict(w: Wallet, db: Session, include_transactions: bool = False) -> dict:
     allocated = float(w.allocated)
-    spent = _compute_spent_this_month(db, str(w.id))
+    spent = _compute_spent_this_month(db, str(w.id), str(w.user_id))
     remaining = max(0.0, allocated - spent)
     percent_used = round((spent / allocated * 100), 2) if allocated > 0 else 0.0
 
@@ -131,7 +132,7 @@ class WalletService:
             .all()
         )
         total_allocated = sum(float(w.allocated) for w in wallets)
-        total_spent = sum(_compute_spent_this_month(db, str(w.id)) for w in wallets)
+        total_spent = sum(_compute_spent_this_month(db, str(w.id), str(w.user_id)) for w in wallets)
         total_remaining = max(0.0, total_allocated - total_spent)
         percent_used = round((total_spent / total_allocated * 100), 2) if total_allocated > 0 else 0.0
         return {

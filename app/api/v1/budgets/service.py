@@ -174,12 +174,18 @@ class BudgetService:
         return CategoryService().get_descendant_ids(db, category_id)
 
     def _spent_for_month(self, b: Budget, db: Session, month: int, year: int) -> float:
-        """Calculate how much was spent against this budget in a specific month."""
+        """Calculate how much was spent against this budget in a specific month
+        (honouring the user's financial cycle / salary-day setting)."""
         from sqlalchemy import or_
+        from datetime import datetime as _dt
+        from app.utils.period import get_month_start_day, period_window, resolve_anchor
+        start_day = get_month_start_day(db, str(b.user_id))
+        ay, am = resolve_anchor(year, month, start_day, _dt.utcnow().date())
+        win_start, win_end = period_window(ay, am, start_day)
         query = db.query(func.sum(Expense.amount)).filter(
             Expense.user_id == b.user_id,
-            extract('year', Expense.expense_date) == year,
-            extract('month', Expense.expense_date) == month,
+            Expense.expense_date >= win_start,
+            Expense.expense_date <= win_end,
         )
         if b.category_id:
             # Include expenses from the category AND all its descendants

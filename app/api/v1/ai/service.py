@@ -101,11 +101,13 @@ class AIService:
             recommendations.append("Create a savings goal to improve your financial health.")
 
         # Expense consistency (0-25 points)
+        from app.utils.period import current_period_window
         today = date.today()
-        month_start = today.replace(day=1)
+        month_start, month_end = current_period_window(db, user_id, today)
         expenses_this_month = db.query(func.count(Expense.id)).filter(
             Expense.user_id == user_id,
             Expense.expense_date >= month_start,
+            Expense.expense_date <= month_end,
         ).scalar() or 0
         consistency_score = min(25, expenses_this_month * 2)
         breakdown["expense_tracking"] = {"score": consistency_score, "max": 25, "expenses_this_month": expenses_this_month}
@@ -129,13 +131,18 @@ class AIService:
         }
 
     def get_savings_advice(self, db: Session, user_id: str, user) -> List[dict]:
+        from app.utils.period import current_period_window
         advice = []
         today = date.today()
-        month_start = today.replace(day=1)
+        month_start, month_end = current_period_window(db, user_id, today)
 
         total_spent = float(
             db.query(func.sum(Expense.amount))
-            .filter(Expense.user_id == user_id, Expense.expense_date >= month_start)
+            .filter(
+                Expense.user_id == user_id,
+                Expense.expense_date >= month_start,
+                Expense.expense_date <= month_end,
+            )
             .scalar() or 0
         )
 

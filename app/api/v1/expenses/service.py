@@ -337,24 +337,21 @@ class ExpenseService:
         return [_expense_to_dict(e) for e in expenses]
 
     def get_summary(self, db: Session, user_id: str) -> dict:
+        from app.utils.period import current_period_window, prev_period_window
         today = date.today()
-        this_month_start = today.replace(day=1)
-        if today.month == 1:
-            last_month_start = today.replace(year=today.year - 1, month=12, day=1)
-            last_month_end = today.replace(day=1)
-        else:
-            last_month_start = today.replace(month=today.month - 1, day=1)
-            last_month_end = this_month_start
+        this_month_start, this_month_end = current_period_window(db, user_id, today)
+        last_month_start, last_month_end = prev_period_window(db, user_id, today)
 
         this_month = db.query(func.sum(Expense.amount)).filter(
             Expense.user_id == user_id,
             Expense.expense_date >= this_month_start,
+            Expense.expense_date <= this_month_end,
         ).scalar() or 0
 
         last_month = db.query(func.sum(Expense.amount)).filter(
             Expense.user_id == user_id,
             Expense.expense_date >= last_month_start,
-            Expense.expense_date < last_month_end,
+            Expense.expense_date <= last_month_end,
         ).scalar() or 0
 
         change_pct = 0.0
@@ -365,7 +362,11 @@ class ExpenseService:
         cat_rows = (
             db.query(Category.name, func.sum(Expense.amount).label("total"))
             .join(Expense, Expense.category_id == Category.id, isouter=True)
-            .filter(Expense.user_id == user_id, Expense.expense_date >= this_month_start)
+            .filter(
+                Expense.user_id == user_id,
+                Expense.expense_date >= this_month_start,
+                Expense.expense_date <= this_month_end,
+            )
             .group_by(Category.name)
             .all()
         )
@@ -374,7 +375,11 @@ class ExpenseService:
         # By payment method
         pm_rows = (
             db.query(Expense.payment_method, func.sum(Expense.amount).label("total"))
-            .filter(Expense.user_id == user_id, Expense.expense_date >= this_month_start)
+            .filter(
+                Expense.user_id == user_id,
+                Expense.expense_date >= this_month_start,
+                Expense.expense_date <= this_month_end,
+            )
             .group_by(Expense.payment_method)
             .all()
         )
