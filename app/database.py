@@ -46,6 +46,8 @@ def apply_schema_patches():
         "ALTER TABLE categories ADD COLUMN IF NOT EXISTS family_group_id UUID",
         "CREATE INDEX IF NOT EXISTS ix_categories_family_group_id "
         "ON categories (family_group_id)",
+        "ALTER TABLE user_preferences ADD COLUMN IF NOT EXISTS "
+        "month_start_day SMALLINT DEFAULT 1",
     ]
     with engine.begin() as conn:
         for stmt in statements:

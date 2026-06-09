@@ -7,6 +7,57 @@ MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
                "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
 
+# ── Custom financial-cycle helpers ──────────────────────────────────────────────
+# A user may set a "month start day" (e.g. salary on the 8th). A period labelled
+# (year, month) then runs from `start_day` of that month to the day before
+# `start_day` of the next month. start_day == 1 reproduces a calendar month.
+
+def _clamp_day(d) -> int:
+    try:
+        return max(1, min(28, int(d)))
+    except (TypeError, ValueError):
+        return 1
+
+
+def _next_month(y: int, m: int):
+    return (y + 1, 1) if m == 12 else (y, m + 1)
+
+
+def _prev_month(y: int, m: int):
+    return (y - 1, 12) if m == 1 else (y, m - 1)
+
+
+def get_month_start_day(db: Session, user_id: str) -> int:
+    """Read the user's configured cycle start day (default 1)."""
+    try:
+        from app.models.user_preference import UserPreference
+        val = (
+            db.query(UserPreference.month_start_day)
+            .filter(UserPreference.user_id == str(user_id))
+            .scalar()
+        )
+        return _clamp_day(val) if val else 1
+    except Exception:
+        return 1
+
+
+def period_window(year: int, month: int, start_day: int):
+    """(start_date, end_date) for the cycle labelled (year, month)."""
+    sd = _clamp_day(start_day)
+    start = date(year, month, sd)
+    ny, nm = _next_month(year, month)
+    end = date(ny, nm, sd) - timedelta(days=1)
+    return start, end
+
+
+def resolve_anchor(year: int, month: int, start_day: int, today: date):
+    """When viewing the *current* calendar month, snap to the cycle that
+    actually contains today (handles the days before the start day)."""
+    if year == today.year and month == today.month and today.day < _clamp_day(start_day):
+        return _prev_month(year, month)
+    return (year, month)
+
+
 class AnalyticsService:
 
     def get_monthly(self, user_id: str, month: str, db: Session) -> dict:
@@ -17,14 +68,16 @@ class AnalyticsService:
             now = datetime.utcnow()
             year, mo = now.year, now.month
 
-        month_start = date(year, mo, 1)
-        _, days_in_month = monthrange(year, mo)
-        month_end = date(year, mo, days_in_month)
+        start_day = get_month_start_day(db, user_id)
+        ay, am = resolve_anchor(year, mo, start_day, datetime.utcnow().date())
+        month_start, month_end = period_window(ay, am, start_day)
+        days_in_period = (month_end - month_start).days + 1
 
-        prev_month_end = month_start - timedelta(days=1)
-        prev_month_start = date(prev_month_end.year, prev_month_end.month, 1)
+        # Previous cycle window
+        py, pm = _prev_month(ay, am)
+        prev_month_start, prev_month_end = period_window(py, pm, start_day)
 
-        # Daily spending for the month
+        # Daily spending across the cycle
         daily = db.execute(text("""
             SELECT expense_date::date as day, COALESCE(SUM(amount), 0) as total
             FROM expenses
@@ -34,16 +87,17 @@ class AnalyticsService:
             ORDER BY day
         """), {"uid": user_id, "start": month_start, "end": month_end}).fetchall()
 
-        # Fill missing days with 0
+        # Fill missing days with 0 across the actual window
         daily_map = {str(r.day): float(r.total) for r in daily}
         daily_data = []
-        for d in range(1, days_in_month + 1):
-            day_str = f"{year}-{mo:02d}-{d:02d}"
+        for i in range(days_in_period):
+            d = month_start + timedelta(days=i)
+            day_str = d.isoformat()
             daily_data.append({"date": day_str, "amount": daily_map.get(day_str, 0.0)})
 
         total = sum(p["amount"] for p in daily_data)
 
-        # Previous month total
+        # Previous cycle total
         prev_total = db.execute(text("""
             SELECT COALESCE(SUM(amount), 0) as total FROM expenses
             WHERE user_id = :uid AND family_group_id IS NULL
@@ -58,9 +112,12 @@ class AnalyticsService:
             "month": month,
             "daily_data": daily_data,
             "total": round(total, 2),
-            "avg_daily": round(total / days_in_month, 2),
+            "avg_daily": round(total / days_in_period, 2) if days_in_period else 0.0,
             "prev_month_total": round(float(prev_total), 2),
             "change_pct": change_pct,
+            "period_start": month_start.isoformat(),
+            "period_end": month_end.isoformat(),
+            "month_start_day": start_day,
         }
 
     def get_categories(self, user_id: str, start_date: str, end_date: str, db: Session) -> dict:
@@ -180,9 +237,9 @@ class AnalyticsService:
         """Group expenses by ai_category for a specific month/year."""
         from app.models.expense import Expense
 
-        month_start = date(year, month, 1)
-        _, days_in_month = monthrange(year, month)
-        month_end = date(year, month, days_in_month)
+        start_day = get_month_start_day(db, user_id)
+        ay, am = resolve_anchor(year, month, start_day, datetime.utcnow().date())
+        month_start, month_end = period_window(ay, am, start_day)
 
         rows = (
             db.query(
@@ -231,9 +288,9 @@ class AnalyticsService:
         """
         from app.models.category import Category
 
-        month_start = date(year, month, 1)
-        _, days_in_month = monthrange(year, month)
-        month_end = date(year, month, days_in_month)
+        start_day = get_month_start_day(db, user_id)
+        ay, am = resolve_anchor(year, month, start_day, datetime.utcnow().date())
+        month_start, month_end = period_window(ay, am, start_day)
 
         # 1) Spend grouped by the (deepest) category node the expense links to.
         rows = db.execute(text("""
@@ -326,6 +383,9 @@ class AnalyticsService:
             "year": year,
             "total": round(grand_total, 2),
             "categories": categories,
+            "period_start": month_start.isoformat(),
+            "period_end": month_end.isoformat(),
+            "month_start_day": start_day,
         }
 
     def get_income_vs_expense_summary(self, user_id: str, months: int, db: Session) -> dict:
@@ -346,13 +406,15 @@ class AnalyticsService:
         total_income = 0.0
         total_expense = 0.0
 
+        # Anchor on the cycle that contains today, then step back month by month.
+        start_day = get_month_start_day(db, user_id)
+        cur_y, cur_m = resolve_anchor(now.year, now.month, start_day, now.date())
+
         for i in range(months - 1, -1, -1):
-            # Step back by i months from the current month
-            target = now.replace(day=1) - timedelta(days=i * 28)
-            yr, mo = target.year, target.month
-            _, days = monthrange(yr, mo)
-            month_start = date(yr, mo, 1)
-            month_end = date(yr, mo, days)
+            yr, mo = cur_y, cur_m
+            for _ in range(i):
+                yr, mo = _prev_month(yr, mo)
+            month_start, month_end = period_window(yr, mo, start_day)
 
             expense_total = (
                 db.query(func.coalesce(func.sum(Expense.amount), 0))

@@ -1,5 +1,5 @@
 from typing import Literal, Optional, List, Any
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 
 
 class UserResponse(BaseModel):
@@ -60,6 +60,7 @@ class PreferencesRequest(BaseModel):
     sms_reading_enabled: Optional[bool] = None
     theme: Optional[Literal["light", "dark"]] = None
     language: Optional[Literal["en", "hi"]] = None
+    month_start_day: Optional[int] = Field(default=None, ge=1, le=28)
 
 
 class PreferencesResponse(BaseModel):
@@ -72,6 +73,7 @@ class PreferencesResponse(BaseModel):
     sms_reading_enabled: bool = False
     theme: Literal["light", "dark"] = "light"
     language: Literal["en", "hi"] = "en"
+    month_start_day: int = 1
     created_at: Optional[str] = None
 
     class Config:
