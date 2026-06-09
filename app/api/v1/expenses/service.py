@@ -236,7 +236,22 @@ class ExpenseService:
         min_amount: Optional[float] = None,
         max_amount: Optional[float] = None,
         shared: bool = False,
+        cycle_month: Optional[str] = None,
     ) -> dict:
+        # cycle_month ("YYYY-MM") → restrict to that financial cycle window,
+        # honouring the user's month_start_day. Overrides start/end_date.
+        if cycle_month:
+            try:
+                from datetime import datetime as _dt
+                from app.utils.period import (
+                    get_month_start_day, period_window, resolve_anchor,
+                )
+                cy, cm = int(cycle_month[:4]), int(cycle_month[5:7])
+                sd = get_month_start_day(db, user_id)
+                ay, am = resolve_anchor(cy, cm, sd, _dt.utcnow().date())
+                start_date, end_date = period_window(ay, am, sd)
+            except Exception:
+                pass
         if shared:
             # Family view: only expenses tagged to the user's family group
             from app.api.v1.family.service import FamilyService

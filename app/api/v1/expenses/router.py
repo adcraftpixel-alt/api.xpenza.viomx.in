@@ -107,13 +107,16 @@ def list_expenses(
     max_amount: Optional[float] = None,
     shared: bool = Query(default=False,
                          description="True = family expenses, False = personal"),
+    cycle_month: Optional[str] = Query(
+        default=None,
+        description="YYYY-MM — restrict to that financial cycle (honours month_start_day)"),
     current_user=Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ):
     result = service.list(
         db, str(current_user.id), page, page_size,
         category_id, start_date, end_date, payment_method, min_amount, max_amount,
-        shared=shared,
+        shared=shared, cycle_month=cycle_month,
     )
     return success(result)
 
