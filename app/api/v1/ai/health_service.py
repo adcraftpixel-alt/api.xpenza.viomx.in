@@ -13,6 +13,8 @@ from typing import Any
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from sqlalchemy import and_
+
 from app.models.budget import Budget
 from app.models.expense import Expense
 from app.models.savings_goal import SavingsGoal
@@ -21,11 +23,39 @@ from app.models.subscription import TrackedSubscription
 logger = logging.getLogger(__name__)
 
 
+def ai_scope(db: Session, user_id: str, shared: bool):
+    """Resolve the data scope for AI calculations.
+
+    Returns (expense_filter, income, is_family):
+      - shared=True  → family-pooled expenses (family_group_id == group) and the
+                       household income (sum of member contributions).
+      - shared=False → the user's personal expenses (family_group_id IS NULL) and
+                       the user's own monthly_income.
+    Falls back to personal scope when the user isn't in a family group.
+    """
+    if shared:
+        from app.api.v1.family.service import FamilyService
+        group = FamilyService()._get_user_group(db, user_id)
+        if group:
+            exp_filter = Expense.family_group_id == str(group.id)
+            income = sum(
+                float(m.contribution or 0)
+                for m in group.members if m.status == "accepted"
+            )
+            return exp_filter, income, True
+    from app.models.user import User
+    u = db.query(User).filter(User.id == user_id).first()
+    income = float(u.monthly_income) if u and u.monthly_income else 0.0
+    exp_filter = and_(Expense.user_id == user_id, Expense.family_group_id.is_(None))
+    return exp_filter, income, False
+
+
 # ---------------------------------------------------------------------------
 # get_health_score
 # ---------------------------------------------------------------------------
 
-def get_health_score(db: Session, user_id: str, user: Any | None = None) -> dict:
+def get_health_score(db: Session, user_id: str, user: Any | None = None,
+                     shared: bool = False) -> dict:
     """
     Calculate a financial health score from 0-100.
 
@@ -49,14 +79,16 @@ def get_health_score(db: Session, user_id: str, user: Any | None = None) -> dict
     tips: list[str] = []
     breakdown: dict[str, Any] = {}
 
+    # Resolve scope: personal vs family (pooled expenses + household income).
+    exp_filter, income, is_family = ai_scope(db, user_id, shared)
+
     # ---- savings_rate (0–40 pts) ----------------------------------------
     savings_pts = 0
-    income = float(user.monthly_income) if (user and user.monthly_income) else 0.0
 
     total_spent_this_month = float(
         db.query(func.sum(Expense.amount))
         .filter(
-            Expense.user_id == user_id,
+            exp_filter,
             Expense.expense_date >= month_start,
             Expense.expense_date <= month_end,
         )
@@ -92,7 +124,11 @@ def get_health_score(db: Session, user_id: str, user: Any | None = None) -> dict
     # ---- budget_adherence (0–30 pts) ------------------------------------
     budgets = (
         db.query(Budget)
-        .filter(Budget.user_id == user_id, Budget.is_active == True)
+        .filter(
+            Budget.user_id == user_id,
+            Budget.is_active == True,
+            Budget.is_shared == is_family,  # family budgets in family mode
+        )
         .all()
     )
     if budgets:
@@ -135,7 +171,7 @@ def get_health_score(db: Session, user_id: str, user: Any | None = None) -> dict
         total = float(
             db.query(func.sum(Expense.amount))
             .filter(
-                Expense.user_id == user_id,
+                exp_filter,
                 Expense.expense_date >= m_start,
                 Expense.expense_date < m_end,
             )
@@ -193,7 +229,7 @@ def get_health_score(db: Session, user_id: str, user: Any | None = None) -> dict
 # get_predictions
 # ---------------------------------------------------------------------------
 
-def get_predictions(db: Session, user_id: str) -> dict:
+def get_predictions(db: Session, user_id: str, shared: bool = False) -> dict:
     """
     Predict next month's spend using a 3-month simple moving average.
 
@@ -210,6 +246,8 @@ def get_predictions(db: Session, user_id: str) -> dict:
     today = date.today()
     monthly_totals: list[float] = []
     forecast: list[dict] = []
+
+    exp_filter, income, _is_family = ai_scope(db, user_id, shared)
 
     for i in range(1, 4):
         ref_month = today.month - i
@@ -228,7 +266,7 @@ def get_predictions(db: Session, user_id: str) -> dict:
         actual = float(
             db.query(func.sum(Expense.amount))
             .filter(
-                Expense.user_id == user_id,
+                exp_filter,
                 Expense.expense_date >= m_start,
                 Expense.expense_date < m_end,
             )
@@ -256,7 +294,7 @@ def get_predictions(db: Session, user_id: str) -> dict:
     top_cat_row = (
         db.query(Expense.ai_category, func.sum(Expense.amount).label("total"))
         .filter(
-            Expense.user_id == user_id,
+            exp_filter,
             Expense.expense_date >= _cyc_start,
             Expense.expense_date <= _cyc_end,
         )
@@ -266,15 +304,10 @@ def get_predictions(db: Session, user_id: str) -> dict:
     )
     top_category: str | None = top_cat_row[0] if top_cat_row else None
 
-    # Savings estimate from user profile (lazy-load)
+    # Savings estimate from income (household income in family mode).
     savings_estimate: float | None = None
-    try:
-        from app.models.user import User  # noqa: PLC0415
-        user = db.query(User).filter(User.id == user_id).first()
-        if user and user.monthly_income:
-            savings_estimate = round(float(user.monthly_income) - round_avg, 2)
-    except Exception:
-        pass
+    if income > 0:
+        savings_estimate = round(income - round_avg, 2)
 
     confidence = 0.7 if all(t > 0 for t in monthly_totals) else 0.3
 
@@ -292,7 +325,7 @@ def get_predictions(db: Session, user_id: str) -> dict:
 # detect_subscriptions
 # ---------------------------------------------------------------------------
 
-def detect_subscriptions(db: Session, user_id: str) -> list[dict]:
+def detect_subscriptions(db: Session, user_id: str, shared: bool = False) -> list[dict]:
     """
     Detect recurring subscription-like expenses from the last 90 days.
 
@@ -316,6 +349,7 @@ def detect_subscriptions(db: Session, user_id: str) -> list[dict]:
     today = date.today()
     ninety_days_ago = today - timedelta(days=90)
 
+    exp_filter, _income, _is_family = ai_scope(db, user_id, shared)
     results: list[dict] = []
 
     # 1. Already-tracked subscriptions
@@ -343,7 +377,7 @@ def detect_subscriptions(db: Session, user_id: str) -> list[dict]:
     recent_expenses = (
         db.query(Expense)
         .filter(
-            Expense.user_id == user_id,
+            exp_filter,
             Expense.expense_date >= ninety_days_ago,
         )
         .order_by(Expense.expense_date.asc())

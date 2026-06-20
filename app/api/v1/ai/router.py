@@ -31,6 +31,8 @@ def get_insights(
 
 @router.get("/health-score")
 def get_health_score(
+    shared: bool = Query(default=False,
+                         description="True = family-pooled, False = personal"),
     current_user=Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ):
@@ -39,7 +41,8 @@ def get_health_score(
     Delegates to health_service.get_health_score for a savings-rate /
     budget-adherence / expense-consistency composite.
     """
-    score = health_service.get_health_score(db, str(current_user.id), current_user)
+    score = health_service.get_health_score(
+        db, str(current_user.id), current_user, shared=shared)
     return success(score)
 
 
@@ -49,11 +52,14 @@ def get_health_score(
 
 @router.get("/savings-advice")
 def get_savings_advice(
+    shared: bool = Query(default=False,
+                         description="True = family-pooled, False = personal"),
     current_user=Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ):
     """Return personalised savings tips based on this month's spending."""
-    advice = service.get_savings_advice(db, str(current_user.id), current_user)
+    advice = service.get_savings_advice(
+        db, str(current_user.id), current_user, shared=shared)
     return success(advice)
 
 
@@ -63,6 +69,8 @@ def get_savings_advice(
 
 @router.get("/predictions")
 def get_predictions(
+    shared: bool = Query(default=False,
+                         description="True = family-pooled, False = personal"),
     current_user=Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ):
@@ -70,7 +78,8 @@ def get_predictions(
     Predict next month's spend using a 3-month moving average.
     Delegates to health_service.get_predictions.
     """
-    predictions = health_service.get_predictions(db, str(current_user.id))
+    predictions = health_service.get_predictions(
+        db, str(current_user.id), shared=shared)
     return success(predictions)
 
 
@@ -80,6 +89,8 @@ def get_predictions(
 
 @router.get("/subscription-detect")
 def detect_subscriptions(
+    shared: bool = Query(default=False,
+                         description="True = family-pooled, False = personal"),
     current_user=Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ):
@@ -88,7 +99,8 @@ def detect_subscriptions(
     Returns both already-tracked subscriptions and newly detected patterns.
     Delegates to health_service.detect_subscriptions.
     """
-    subs = health_service.detect_subscriptions(db, str(current_user.id))
+    subs = health_service.detect_subscriptions(
+        db, str(current_user.id), shared=shared)
     return success(subs)
 
 

@@ -19,7 +19,26 @@ from app.utils.period import (  # noqa: E402
 
 class AnalyticsService:
 
-    def get_monthly(self, user_id: str, month: str, db: Session) -> dict:
+    def _scope(self, db: Session, user_id: str, shared: bool, alias: str = ""):
+        """Resolve the expense scope for analytics queries.
+
+        Returns (where_fragment, params, group):
+          - shared=True (and in a group) → family-pooled expenses
+          - otherwise                    → the user's personal expenses
+        `alias` is an optional table prefix like 'e.' for joined queries.
+        """
+        group = None
+        if shared:
+            from app.api.v1.family.service import FamilyService
+            group = FamilyService()._get_user_group(db, user_id)
+        fg = f"{alias}family_group_id"
+        ui = f"{alias}user_id"
+        if group:
+            return f"{fg} = :gid", {"gid": str(group.id)}, group
+        return f"{ui} = :uid AND {fg} IS NULL", {"uid": user_id}, group
+
+    def get_monthly(self, user_id: str, month: str, db: Session,
+                    shared: bool = False) -> dict:
         """month format: YYYY-MM"""
         try:
             year, mo = int(month[:4]), int(month[5:7])
@@ -36,15 +55,17 @@ class AnalyticsService:
         py, pm = _prev_month(ay, am)
         prev_month_start, prev_month_end = period_window(py, pm, start_day)
 
+        scope_sql, scope_params, _grp = self._scope(db, user_id, shared)
+
         # Daily spending across the cycle
-        daily = db.execute(text("""
+        daily = db.execute(text(f"""
             SELECT expense_date::date as day, COALESCE(SUM(amount), 0) as total
             FROM expenses
-            WHERE user_id = :uid AND family_group_id IS NULL
+            WHERE {scope_sql}
               AND expense_date >= :start AND expense_date <= :end
             GROUP BY expense_date::date
             ORDER BY day
-        """), {"uid": user_id, "start": month_start, "end": month_end}).fetchall()
+        """), {**scope_params, "start": month_start, "end": month_end}).fetchall()
 
         # Fill missing days with 0 across the actual window
         daily_map = {str(r.day): float(r.total) for r in daily}
@@ -57,11 +78,11 @@ class AnalyticsService:
         total = sum(p["amount"] for p in daily_data)
 
         # Previous cycle total
-        prev_total = db.execute(text("""
+        prev_total = db.execute(text(f"""
             SELECT COALESCE(SUM(amount), 0) as total FROM expenses
-            WHERE user_id = :uid AND family_group_id IS NULL
+            WHERE {scope_sql}
               AND expense_date >= :start AND expense_date <= :end
-        """), {"uid": user_id, "start": prev_month_start, "end": prev_month_end}).scalar() or 0
+        """), {**scope_params, "start": prev_month_start, "end": prev_month_end}).scalar() or 0
 
         change_pct = 0.0
         if float(prev_total) > 0:
@@ -234,7 +255,8 @@ class AnalyticsService:
             "year": year,
         }
 
-    def get_category_breakdown(self, user_id: str, month: int, year: int, db: Session) -> dict:
+    def get_category_breakdown(self, user_id: str, month: int, year: int,
+                               db: Session, shared: bool = False) -> dict:
         """
         Monthly spend grouped as top-level category → the specific item it was
         tagged to.
@@ -251,21 +273,25 @@ class AnalyticsService:
         ay, am = resolve_anchor(year, month, start_day, datetime.utcnow().date())
         month_start, month_end = period_window(ay, am, start_day)
 
+        scope_sql, scope_params, group = self._scope(db, user_id, shared)
+
         # 1) Spend grouped by the (deepest) category node the expense links to.
-        rows = db.execute(text("""
+        rows = db.execute(text(f"""
             SELECT category_id, SUM(amount) AS amount, COUNT(*) AS cnt
             FROM expenses
-            WHERE user_id = :uid AND family_group_id IS NULL
+            WHERE {scope_sql}
               AND expense_date >= :start AND expense_date <= :end
             GROUP BY category_id
-        """), {"uid": user_id, "start": month_start, "end": month_end}).fetchall()
+        """), {**scope_params, "start": month_start, "end": month_end}).fetchall()
 
         # 2) Load every category in scope into a lookup so we can walk parents.
-        cat_rows = (
-            db.query(Category)
-            .filter(Category.user_id == user_id, Category.family_group_id.is_(None))
-            .all()
-        )
+        cat_q = db.query(Category)
+        if group is not None:
+            cat_q = cat_q.filter(Category.family_group_id == str(group.id))
+        else:
+            cat_q = cat_q.filter(
+                Category.user_id == user_id, Category.family_group_id.is_(None))
+        cat_rows = cat_q.all()
         cat_map = {str(c.id): c for c in cat_rows}
 
         def _root_and_node(node_id):

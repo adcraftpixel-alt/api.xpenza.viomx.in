@@ -130,24 +130,27 @@ class AIService:
             "recommendations": recommendations,
         }
 
-    def get_savings_advice(self, db: Session, user_id: str, user) -> List[dict]:
+    def get_savings_advice(self, db: Session, user_id: str, user,
+                           shared: bool = False) -> List[dict]:
         from app.utils.period import current_period_window
+        from app.api.v1.ai.health_service import ai_scope
         advice = []
         today = date.today()
         month_start, month_end = current_period_window(db, user_id, today)
 
+        exp_filter, income, _is_family = ai_scope(db, user_id, shared)
+
         total_spent = float(
             db.query(func.sum(Expense.amount))
             .filter(
-                Expense.user_id == user_id,
+                exp_filter,
                 Expense.expense_date >= month_start,
                 Expense.expense_date <= month_end,
             )
             .scalar() or 0
         )
 
-        if user.monthly_income:
-            income = float(user.monthly_income)
+        if income > 0:
             savings = income - total_spent
             if savings < 0:
                 advice.append({

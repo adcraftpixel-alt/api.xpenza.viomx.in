@@ -14,6 +14,7 @@ router = APIRouter(tags=["Analytics"])
 def get_monthly(
     month: str = Query(default=None, description="YYYY-MM format"),
     months: int = Query(default=1, ge=1, le=24, description="Number of months to return as trend list"),
+    shared: bool = Query(default=False, description="True = family-pooled, False = personal"),
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
@@ -56,7 +57,7 @@ def get_monthly(
 
     if not month:
         month = f"{now.year}-{now.month:02d}"
-    data = analytics_service.get_monthly(str(current_user.id), month, db)
+    data = analytics_service.get_monthly(str(current_user.id), month, db, shared=shared)
     return success(data)
 
 
@@ -90,6 +91,7 @@ def get_categories(
 def get_category_breakdown(
     month: int = Query(default=None, ge=1, le=12, description="Month number (1-12)"),
     year: int = Query(default=None, description="4-digit year"),
+    shared: bool = Query(default=False, description="True = family-pooled, False = personal"),
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
@@ -97,7 +99,7 @@ def get_category_breakdown(
     now = datetime.utcnow()
     mo = month if month is not None else now.month
     yr = year if year is not None else now.year
-    data = analytics_service.get_category_breakdown(str(current_user.id), mo, yr, db)
+    data = analytics_service.get_category_breakdown(str(current_user.id), mo, yr, db, shared=shared)
     return success(data)
 
 
