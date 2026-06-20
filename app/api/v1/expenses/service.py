@@ -169,20 +169,27 @@ class ExpenseService:
         return {"total_scanned": len(expenses), "updated": updated}
 
     def _check_and_notify(self, db: Session, user_id: str, expense: Expense, category_name: str) -> None:
-        """Fire in-app notifications for large expenses and budget threshold breaches."""
+        """Fire in-app + push notifications for large expenses, budget breaches,
+        and family-member activity."""
         try:
             from app.api.v1.notifications.service import NotificationService
             notif_svc = NotificationService()
             amount = float(expense.amount)
+            desc = expense.description or expense.merchant or 'Expense'
 
-            # 1. Large expense alert (> ₹2,000)
-            if amount >= 2000:
-                desc = expense.description or expense.merchant or 'Expense'
+            # 0. Family expense → notify every OTHER accepted member.
+            if expense.family_group_id:
+                self._notify_family_members(
+                    db, notif_svc, expense, user_id, amount, desc)
+
+            # 1. Large expense alert (> ₹2,000) — personal only.
+            if amount >= 2000 and not expense.family_group_id:
                 notif_svc.create_notification(
                     db, user_id,
                     title=f"Large expense: ₹{amount:,.0f}",
                     body=f"{desc} — categorised as {category_name}",
                     type="large_expense",
+                    data={"expense_id": str(expense.id)},
                 )
 
             # 2. Budget threshold alert — check if this expense pushed a budget over 80%
@@ -211,9 +218,46 @@ class ExpenseService:
                             title=f"{'Over' if is_over else 'Near'} budget: {label}",
                             body=f"₹{budget.spent:,.0f} of ₹{budget.amount:,.0f} used ({pct:.0f}%{'!' if is_over else ''})",
                             type="budget_alert",
+                            data={"budget_id": str(budget.id)},
                         )
         except Exception:
             pass  # Never let notification errors break expense creation
+
+    def _notify_family_members(
+        self, db: Session, notif_svc, expense: Expense,
+        actor_id: str, amount: float, desc: str,
+    ) -> None:
+        """When a member adds a shared expense, notify the other members."""
+        try:
+            from app.models.family_group import FamilyGroupMember
+            from app.models.user import User
+
+            actor = db.query(User).filter(User.id == actor_id).first()
+            actor_name = (actor.name if actor else None) or "A family member"
+
+            members = (
+                db.query(FamilyGroupMember)
+                .filter(
+                    FamilyGroupMember.group_id == str(expense.family_group_id),
+                    FamilyGroupMember.status == "accepted",
+                )
+                .all()
+            )
+            for m in members:
+                if not m.user_id or str(m.user_id) == str(actor_id):
+                    continue  # skip the person who added it
+                notif_svc.create_notification(
+                    db, str(m.user_id),
+                    title="New family expense",
+                    body=f"{actor_name} added ₹{amount:,.0f} · {desc}",
+                    type="family_expense",
+                    data={
+                        "expense_id": str(expense.id),
+                        "group_id": str(expense.family_group_id),
+                    },
+                )
+        except Exception:
+            pass
 
     def get_by_id(self, db: Session, expense_id: str, user_id: str) -> dict:
         expense = db.query(Expense).filter(Expense.id == expense_id).first()
@@ -238,18 +282,28 @@ class ExpenseService:
         shared: bool = False,
         cycle_month: Optional[str] = None,
     ) -> dict:
-        # cycle_month ("YYYY-MM") → restrict to that financial cycle window,
-        # honouring the user's month_start_day. Overrides start/end_date.
+        # cycle_month ("YYYY-MM") → restrict to that month. Overrides start/end_date.
         if cycle_month:
             try:
-                from datetime import datetime as _dt
-                from app.utils.period import (
-                    get_month_start_day, period_window, resolve_anchor,
-                )
                 cy, cm = int(cycle_month[:4]), int(cycle_month[5:7])
-                sd = get_month_start_day(db, user_id)
-                ay, am = resolve_anchor(cy, cm, sd, _dt.utcnow().date())
-                start_date, end_date = period_window(ay, am, sd)
+                if shared:
+                    # Family view uses plain calendar months — consistent with the
+                    # family dashboard (/family/expenses). The salary cycle
+                    # (month_start_day) is a personal concept and doesn't apply to
+                    # a shared family book, so using it here would hide family
+                    # expenses dated before the user's cycle start day.
+                    from calendar import monthrange
+                    start_date = date(cy, cm, 1)
+                    end_date = date(cy, cm, monthrange(cy, cm)[1])
+                else:
+                    # Personal view honours the user's financial cycle / salary day.
+                    from datetime import datetime as _dt
+                    from app.utils.period import (
+                        get_month_start_day, period_window, resolve_anchor,
+                    )
+                    sd = get_month_start_day(db, user_id)
+                    ay, am = resolve_anchor(cy, cm, sd, _dt.utcnow().date())
+                    start_date, end_date = period_window(ay, am, sd)
             except Exception:
                 pass
         if shared:
@@ -282,7 +336,7 @@ class ExpenseService:
             query = query.filter(Expense.amount <= max_amount)
 
         total = query.count()
-        expenses = query.order_by(Expense.expense_date.desc()).offset((page - 1) * page_size).limit(page_size).all()
+        expenses = query.order_by(Expense.expense_date.desc(), Expense.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
 
         return {
             "items": [_expense_to_dict(e) for e in expenses],
@@ -335,7 +389,7 @@ class ExpenseService:
             ),
         )
         total = query.count()
-        items = query.order_by(Expense.expense_date.desc()).offset((page - 1) * page_size).limit(page_size).all()
+        items = query.order_by(Expense.expense_date.desc(), Expense.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
         return {
             "items": [_expense_to_dict(e) for e in items],
             "total": total,
@@ -403,7 +457,7 @@ class ExpenseService:
         recent = (
             db.query(Expense)
             .filter(Expense.user_id == user_id)
-            .order_by(Expense.expense_date.desc())
+            .order_by(Expense.expense_date.desc(), Expense.created_at.desc())
             .limit(5)
             .all()
         )
