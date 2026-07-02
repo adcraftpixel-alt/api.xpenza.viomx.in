@@ -27,6 +27,10 @@ class Expense(Base):
     notes = Column(Text, nullable=True)
     family_group_id = Column(UUID(as_uuid=False), ForeignKey("family_groups.id", ondelete="SET NULL"), nullable=True)
     added_by_user_id = Column(UUID(as_uuid=False), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    # Family expenses: the member the spend is ATTRIBUTED to (who spent), which
+    # may differ from user_id/added_by (who logged it). Null => attributed to
+    # user_id. Kept separate so edit/delete permissions still key off user_id.
+    spent_by_user_id = Column(UUID(as_uuid=False), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 

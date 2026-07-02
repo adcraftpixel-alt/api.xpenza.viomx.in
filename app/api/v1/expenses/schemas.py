@@ -18,6 +18,9 @@ class CreateExpenseRequest(BaseModel):
     currency: str = "INR"
     ai_category: Optional[str] = None
     family_group_id: Optional[str] = None
+    # Family only: attribute this spend to a specific member (their user_id).
+    # Defaults to the creator when omitted.
+    spent_by_user_id: Optional[str] = None
 
 
 class UpdateExpenseRequest(BaseModel):

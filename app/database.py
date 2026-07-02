@@ -52,6 +52,8 @@ def apply_schema_patches():
         # month_start_day but for the shared family book).
         "ALTER TABLE family_groups ADD COLUMN IF NOT EXISTS "
         "month_start_day SMALLINT DEFAULT 1",
+        # Family expense spend attribution (who spent, vs user_id = who logged).
+        "ALTER TABLE expenses ADD COLUMN IF NOT EXISTS spent_by_user_id UUID",
         # Device tokens for push notifications. The model lives on a separate
         # Base, so create_all() never builds it — create it explicitly here.
         "CREATE TABLE IF NOT EXISTS user_device_tokens ("

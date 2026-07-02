@@ -69,6 +69,22 @@ class ExpenseService:
     def create(self, db: Session, user_id: str, data: CreateExpenseRequest) -> dict:
         family_group_id = getattr(data, 'family_group_id', None)
 
+        # Spend attribution (family only): the expense counts toward this
+        # member's spending. Valid only if they're an accepted member of the
+        # group; otherwise it falls back to the creator (null => user_id).
+        spent_by_user_id = None
+        requested_spender = getattr(data, 'spent_by_user_id', None)
+        if (family_group_id and requested_spender
+                and str(requested_spender) != str(user_id)):
+            from app.models.family_group import FamilyGroupMember
+            is_member = db.query(FamilyGroupMember.id).filter(
+                FamilyGroupMember.group_id == str(family_group_id),
+                FamilyGroupMember.user_id == str(requested_spender),
+                FamilyGroupMember.status == "accepted",
+            ).first()
+            if is_member:
+                spent_by_user_id = str(requested_spender)
+
         # Auto-assign category_id via the hybrid resolver when not provided
         # (chat screen, quick-add, etc.). Resolve against the correct scope —
         # the shared family tree for family expenses, else the personal tree.
@@ -103,6 +119,7 @@ class ExpenseService:
             # Family expense when created from the family chat; else personal
             family_group_id=family_group_id,
             added_by_user_id=user_id if family_group_id else None,
+            spent_by_user_id=spent_by_user_id,
         )
         db.add(expense)
         db.commit()

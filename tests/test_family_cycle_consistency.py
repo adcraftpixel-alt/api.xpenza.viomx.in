@@ -10,6 +10,66 @@ current calendar month).
 """
 
 
+def _register_login(client, name, email, phone):
+    client.post("/api/v1/auth/register", json={
+        "name": name, "email": email, "phone": phone, "password": "TestPass123!",
+    })
+    r = client.post("/api/v1/auth/login",
+                    json={"email": email, "password": "TestPass123!"})
+    return {"Authorization": f"Bearer {r.json()['access_token']}"}
+
+
+def _me_id(client, headers):
+    return client.get("/api/v1/users/me", headers=headers).json()["data"]["id"]
+
+
+def test_family_spend_attribution(client):
+    """Owner can log a spend on behalf of another member; member_totals
+    attributes it to that member, not the logger."""
+    from datetime import date as _date
+    owner = _register_login(client, "Owner", "owner@example.com", "+919000000010")
+    neetika = _register_login(client, "Neetika", "neetika@example.com",
+                              "+919000000011")
+    neetika_id = _me_id(client, neetika)
+
+    gid = client.post("/api/v1/family/groups", json={"name": "Fam"},
+                      headers=owner).json()["data"]["id"]
+
+    # Invite Neetika (auto-links since she has an account) and accept.
+    assert client.post("/api/v1/family/invite",
+                       json={"phone": "+919000000011"},
+                       headers=owner).status_code == 200
+    invites = client.get("/api/v1/family/invites/pending",
+                         headers=neetika).json()["data"]
+    assert invites, "Neetika has no pending invite"
+    assert client.post("/api/v1/family/invites/accept",
+                       json={"group_id": invites[0]["group_id"]},
+                       headers=neetika).status_code == 200
+
+    today = _date.today().isoformat()
+    # Owner's own family spend
+    client.post("/api/v1/expenses", json={
+        "amount": 300, "expense_date": today, "description": "owner spend",
+        "family_group_id": gid,
+    }, headers=owner)
+    # Owner logs a spend ON BEHALF OF Neetika
+    client.post("/api/v1/expenses", json={
+        "amount": 700, "expense_date": today, "description": "neetika spend",
+        "family_group_id": gid, "spent_by_user_id": neetika_id,
+    }, headers=owner)
+
+    now = _date.today()
+    fam = client.get(
+        f"/api/v1/family/expenses?year={now.year}&month={now.month}",
+        headers=owner)
+    assert fam.status_code == 200, fam.text
+    totals = fam.json()["data"]["member_totals"]
+    owner_key = next(k for k in totals if "(Me)" in k)
+    neetika_key = next(k for k in totals if "Neetika" in k)
+    assert totals[owner_key] == 300, totals      # NOT 1000
+    assert totals[neetika_key] == 700, totals     # attributed to the member
+
+
 def _auth(client, email):
     client.post("/api/v1/auth/register", json={
         "name": "Cycle User", "email": email,

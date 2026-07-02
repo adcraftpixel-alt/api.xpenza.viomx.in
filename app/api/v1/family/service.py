@@ -386,20 +386,29 @@ class FamilyService:
                 return f"{base} (Me)"
             return base
 
-        # Per-member totals
-        member_totals: dict = {}
-        for e in expenses:
-            uid = str(e.user_id)
-            member_totals[uid] = member_totals.get(uid, 0) + float(e.amount)
-
         # user_id → display name (with "(Me)" for self)
         member_names = {
             str(m.user_id): display_name(m)
             for m in group.members if m.user_id
         }
+        accepted = [m for m in group.members if m.status == "accepted"]
+
+        # Attribute each expense to its SPENDER: spent_by_user_id when set
+        # (e.g. logged on behalf of a member from the family chat), else the
+        # creator/user_id.
+        def spender_uid(e) -> str:
+            return str(e.spent_by_user_id or e.user_id)
+
+        # Per-member spend totals — seed every accepted member at 0 so the
+        # "who spent what" breakdown always lists the whole family.
+        member_totals: dict = {
+            str(m.user_id): 0.0 for m in accepted if m.user_id
+        }
+        for e in expenses:
+            uid = spender_uid(e)
+            member_totals[uid] = member_totals.get(uid, 0.0) + float(e.amount)
 
         # Household income = sum of contributions across accepted members
-        accepted = [m for m in group.members if m.status == "accepted"]
         household_income = sum(float(m.contribution or 0) for m in accepted)
         earner_count = sum(1 for m in accepted if float(m.contribution or 0) > 0)
         total_spent = sum(float(e.amount) for e in expenses)
@@ -410,12 +419,15 @@ class FamilyService:
             for m in accepted if float(m.contribution or 0) > 0
         }
 
-        # Expense list — mark "(Me)" on the requester's own entries
+        # Expense list — attribute each row to its spender for display.
         expense_dicts = []
         for e in expenses:
             d = _expense_to_dict(e)
-            if str(e.user_id) == str(user_id):
-                d["added_by_name"] = f"{d.get('added_by_name', 'Member')} (Me)"
+            suid = spender_uid(e)
+            d["spent_by_user_id"] = suid
+            # member_names already carries "(Me)" for the requesting user.
+            d["added_by_name"] = member_names.get(
+                suid, d.get("added_by_name", "Member"))
             expense_dicts.append(d)
 
         return {
