@@ -1,7 +1,6 @@
 from datetime import datetime
 from typing import Optional, List
 from sqlalchemy.orm import Session
-from sqlalchemy import or_, extract
 
 from app.models.family_group import FamilyGroup, FamilyGroupMember
 from app.models.expense import Expense
@@ -35,6 +34,7 @@ def _group_to_dict(g: FamilyGroup) -> dict:
         "id": str(g.id),
         "name": g.name,
         "created_by": str(g.created_by),
+        "month_start_day": int(g.month_start_day or 1),
         "members": [_member_to_dict(m) for m in g.members],
     }
 
@@ -97,6 +97,36 @@ class FamilyService:
             if member:
                 return db.query(FamilyGroup).filter(FamilyGroup.id == member.group_id).first()
         return None
+
+    def _is_group_admin(self, db: Session, group: FamilyGroup, user_id: str) -> bool:
+        """Whether the user may change group-wide settings (creator or an
+        accepted member with the ``admin`` role)."""
+        if str(group.created_by) == str(user_id):
+            return True
+        member = db.query(FamilyGroupMember).filter(
+            FamilyGroupMember.group_id == str(group.id),
+            FamilyGroupMember.user_id == str(user_id),
+            FamilyGroupMember.role == "admin",
+            FamilyGroupMember.status == "accepted",
+        ).first()
+        return member is not None
+
+    def update_group_settings(self, db: Session, user_id: str,
+                              month_start_day: int) -> dict:
+        """Update group-wide settings (currently the shared financial cycle
+        start day). Admin-only, since it affects the whole family's book."""
+        group = self._get_user_group(db, user_id)
+        if not group:
+            raise NotFoundError("No family group")
+        if not self._is_group_admin(db, group, user_id):
+            raise ForbiddenError(
+                "Only a family admin can change the monthly cycle")
+
+        from app.utils.period import clamp_day
+        group.month_start_day = clamp_day(month_start_day)
+        db.commit()
+        db.refresh(group)
+        return _group_to_dict(group)
 
     def create_group(self, db: Session, user_id: str, data: CreateGroupRequest) -> dict:
         existing = self._get_user_group(db, user_id)
@@ -313,11 +343,21 @@ class FamilyService:
             if m.user_id and m.status == "accepted"
         ]
 
+        # Resolve the family's shared financial cycle window for (year, month).
+        # start_day == 1 → a plain calendar month; otherwise e.g. 5th → 4th of
+        # next month, matching whatever the family configured.
+        from app.utils.period import (
+            get_group_month_start_day, period_window, resolve_anchor,
+        )
+        start_day = get_group_month_start_day(db, group.id)
+        ay, am = resolve_anchor(year, month, start_day, datetime.utcnow().date())
+        period_start, period_end = period_window(ay, am, start_day)
+
         # Only expenses explicitly added to THIS family group (not personal ones)
         expenses = db.query(Expense).filter(
             Expense.family_group_id == str(group.id),
-            extract("year", Expense.expense_date) == year,
-            extract("month", Expense.expense_date) == month,
+            Expense.expense_date >= period_start,
+            Expense.expense_date <= period_end,
         ).order_by(Expense.expense_date.desc()).all()
 
         # Display name helper — appends "(Me)" for the requesting user
@@ -363,6 +403,9 @@ class FamilyService:
             "has_group": True,
             "group_name": group.name,
             "member_count": len(accepted),
+            "month_start_day": start_day,
+            "period_start": period_start.isoformat(),
+            "period_end": period_end.isoformat(),
             "expenses": expense_dicts,
             "total": total_spent,
             "household_income": household_income,

@@ -41,6 +41,24 @@ def _budget_to_dict(b: Budget, spent_override: Optional[float] = None,
 
 
 class BudgetService:
+    def _resolve_root_category(self, db: Session, user_id: str, category_id: str) -> str:
+        """Validate scope/ownership of a category and snap it to its main (root) category.
+
+        Budgets are always set on a main category. If a sub-category or leaf is passed
+        (e.g. from chat/AI or an older client), it is resolved up to its root so spend
+        from every descendant rolls into the one main-category budget.
+        """
+        from app.models.category import Category
+        from app.api.v1.categories.service import CategoryService
+        cat = db.query(Category).filter(Category.id == category_id).first()
+        if not cat:
+            raise NotFoundError("Category not found")
+        # Personal category must be owned by the user; family categories are scope-checked
+        # by the budget's own is_shared/family_group_id flow, so allow them through here.
+        if cat.family_group_id is None and str(cat.user_id) != str(user_id):
+            raise ForbiddenError("Access denied to category")
+        return CategoryService().get_root_id(db, category_id)
+
     def create(self, db: Session, user_id: str, data: CreateBudgetRequest) -> dict:
         family_group_id = None
         if data.is_shared:
@@ -59,11 +77,16 @@ class BudgetService:
             if group:
                 family_group_id = str(group.id)
 
+        # Budgets attach only to main categories — snap any sub/leaf up to its root
+        category_id = data.category_id
+        if category_id:
+            category_id = self._resolve_root_category(db, user_id, category_id)
+
         budget = Budget(
             user_id=user_id,
             name=data.name,
             amount=data.amount,
-            category_id=data.category_id,
+            category_id=category_id,
             period=data.period,
             start_date=data.start_date,
             end_date=data.end_date,
@@ -221,7 +244,13 @@ class BudgetService:
             raise NotFoundError("Budget not found")
         if str(b.user_id) != str(user_id):
             raise ForbiddenError("Access denied")
-        for field, value in data.model_dump(exclude_unset=True).items():
+        updated = data.model_dump(exclude_unset=True)
+        # Budgets attach only to main categories — snap any sub/leaf up to its root
+        if updated.get("category_id"):
+            updated["category_id"] = self._resolve_root_category(
+                db, user_id, updated["category_id"]
+            )
+        for field, value in updated.items():
             setattr(b, field, value)
         db.commit()
         db.refresh(b)

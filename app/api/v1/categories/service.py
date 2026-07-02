@@ -195,6 +195,24 @@ class CategoryService:
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
+    def get_root_id(self, db: Session, category_id: str) -> str:
+        """Walk up the parent chain and return the main (root, level 0) ancestor's id.
+
+        Budgets attach only to main categories, so any sub/leaf category passed in
+        is resolved to the root it belongs to (e.g. 'Restaurants' -> 'Food').
+        """
+        cat = db.query(Category).filter(Category.id == category_id).first()
+        if not cat:
+            raise NotFoundError("Category not found")
+        hops = 0  # depth is capped at 3 levels; guard against cycles anyway
+        while cat.parent_id and hops < MAX_LEVEL + 1:
+            parent = db.query(Category).filter(Category.id == cat.parent_id).first()
+            if not parent:
+                break
+            cat = parent
+            hops += 1
+        return str(cat.id)
+
     def get_descendant_ids(self, db: Session, category_id: str) -> List[str]:
         """Return category_id plus IDs of all descendants (max 3 levels)."""
         ids = [str(category_id)]

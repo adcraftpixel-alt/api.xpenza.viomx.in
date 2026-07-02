@@ -39,6 +39,24 @@ def get_month_start_day(db, user_id: str) -> int:
         return 1
 
 
+def get_group_month_start_day(db, group_id: str) -> int:
+    """Read the family group's configured cycle start day (default 1).
+
+    This is the shared, group-wide cycle used by the family book/analytics —
+    independent of any member's personal ``month_start_day`` preference.
+    """
+    try:
+        from app.models.family_group import FamilyGroup
+        val = (
+            db.query(FamilyGroup.month_start_day)
+            .filter(FamilyGroup.id == str(group_id))
+            .scalar()
+        )
+        return clamp_day(val) if val else 1
+    except Exception:
+        return 1
+
+
 def period_window(year: int, month: int, start_day: int):
     """(start_date, end_date) for the cycle labelled (year, month)."""
     sd = clamp_day(start_day)

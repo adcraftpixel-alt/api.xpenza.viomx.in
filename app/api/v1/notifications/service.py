@@ -277,9 +277,13 @@ class NotificationService:
         title: str,
         body: str,
         type: str,  # noqa: A002  (shadows built-in, but matches spec)
-        data: dict = {},  # noqa: B006
+        data: dict = None,  # noqa: B006
+        push: bool = True,
     ) -> dict:
-        """Persist a new notification and return its dict representation."""
+        """Persist a new notification and (optionally) push it to the user's
+        devices. The push carries a small deep-link payload so tapping it can
+        open the right screen in the app."""
+        data = data or {}
         n = Notification(
             id=str(uuid.uuid4()),
             user_id=user_id,
@@ -294,7 +298,57 @@ class NotificationService:
         db.commit()
         db.refresh(n)
         logger.info("[NOTIFICATION] created id=%s user=%s type=%s", n.id, user_id, type)
+
+        if push:
+            self.push_to_user(db, user_id, title, body, type, data)
         return _notif_to_dict(n)
+
+    def push_to_user(
+        self,
+        db: Session,
+        user_id: str,
+        title: str,
+        body: str,
+        type: str,  # noqa: A002
+        data: dict = None,  # noqa: B006
+    ) -> None:
+        """Send an FCM push to every device the user has registered.
+
+        The data payload always carries `type` + the current unread `badge`
+        count + any extra ids (expense_id, group_id, …) so the app can both
+        badge the icon and deep-link on tap. Never raises."""
+        try:
+            from app.models.device_token import UserDeviceToken
+            from app.utils.fcm import send_push_notification
+
+            tokens = (
+                db.query(UserDeviceToken)
+                .filter(UserDeviceToken.user_id == str(user_id))
+                .all()
+            )
+            if not tokens:
+                return
+
+            unread = (
+                db.query(Notification)
+                .filter(Notification.user_id == user_id, Notification.is_read == False)  # noqa: E712
+                .count()
+            )
+            # FCM data values must all be strings.
+            payload = {k: str(v) for k, v in (data or {}).items()}
+            payload["type"] = type
+            payload["badge"] = str(unread)
+
+            for t in tokens:
+                send_push_notification(
+                    device_token=t.device_token,
+                    title=title,
+                    body=body,
+                    data=payload,
+                    notification_type=type,
+                )
+        except Exception as exc:  # never let push break the caller
+            logger.warning("push_to_user failed: %s", exc)
 
     # ------------------------------------------------------------------
     # Device token (push notifications)

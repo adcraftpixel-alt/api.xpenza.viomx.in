@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     ADMIN_URL: str = "http://localhost:5173"
     ENVIRONMENT: str = "development"
     AI_SERVICE_URL: str = "http://localhost:8001"
+    # Firebase Admin service-account JSON (full JSON string) — enables FCM push.
+    # Get it from Firebase console → Project settings → Service accounts →
+    # "Generate new private key". Paste the whole JSON as one env var.
+    FIREBASE_SERVICE_ACCOUNT: str = ""
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

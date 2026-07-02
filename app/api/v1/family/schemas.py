@@ -1,10 +1,15 @@
 from typing import Optional, List
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class CreateGroupRequest(BaseModel):
     name: str
     contribution: Optional[float] = None  # creator's initial contribution
+
+
+class UpdateGroupSettingsRequest(BaseModel):
+    # Day of month the shared family cycle starts (1 = calendar month).
+    month_start_day: int = Field(ge=1, le=28)
 
 
 class InviteMemberRequest(BaseModel):
@@ -34,4 +39,5 @@ class GroupResponse(BaseModel):
     id: str
     name: str
     created_by: str
+    month_start_day: int = 1
     members: List[MemberResponse]

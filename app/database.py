@@ -48,6 +48,23 @@ def apply_schema_patches():
         "ON categories (family_group_id)",
         "ALTER TABLE user_preferences ADD COLUMN IF NOT EXISTS "
         "month_start_day SMALLINT DEFAULT 1",
+        # Family-group-wide financial cycle start day (mirrors the per-user
+        # month_start_day but for the shared family book).
+        "ALTER TABLE family_groups ADD COLUMN IF NOT EXISTS "
+        "month_start_day SMALLINT DEFAULT 1",
+        # Device tokens for push notifications. The model lives on a separate
+        # Base, so create_all() never builds it — create it explicitly here.
+        "CREATE TABLE IF NOT EXISTS user_device_tokens ("
+        "  id UUID PRIMARY KEY,"
+        "  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,"
+        "  device_token VARCHAR(512) NOT NULL,"
+        "  platform VARCHAR(20) DEFAULT 'mobile',"
+        "  created_at TIMESTAMP DEFAULT NOW(),"
+        "  updated_at TIMESTAMP DEFAULT NOW(),"
+        "  UNIQUE (user_id, device_token)"
+        ")",
+        "CREATE INDEX IF NOT EXISTS ix_user_device_tokens_user_id "
+        "ON user_device_tokens (user_id)",
     ]
     with engine.begin() as conn:
         for stmt in statements:

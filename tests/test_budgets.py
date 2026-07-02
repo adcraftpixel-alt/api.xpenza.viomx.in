@@ -103,3 +103,54 @@ def test_budget_spent_updates_on_expense(client, auth_headers, db):
     data = response.json()["data"]
     assert data["spent"] >= 1500.0, f"Expected spent >= 1500, got {data['spent']}"
     assert data["percent_used"] > 0.0
+
+
+def test_budget_snaps_to_main_category_and_rolls_up(client, auth_headers, db):
+    """A budget created against a sub/leaf category must bind to its MAIN (root)
+    category, and an expense logged on the leaf must roll up into that budget."""
+    # 1. Build a 3-level tree: Food -> Restaurants -> Zomato
+    food = client.post(
+        "/api/v1/categories", json={"name": "Food"}, headers=auth_headers
+    ).json()["data"]
+    restaurants = client.post(
+        "/api/v1/categories",
+        json={"name": "Restaurants", "parent_id": food["id"]},
+        headers=auth_headers,
+    ).json()["data"]
+    zomato = client.post(
+        "/api/v1/categories",
+        json={"name": "Zomato", "parent_id": restaurants["id"]},
+        headers=auth_headers,
+    ).json()["data"]
+    assert food["level"] == 0 and zomato["level"] == 2
+
+    # 2. Create a budget pointing at the LEAF category — it should snap to Food
+    budget = client.post(
+        "/api/v1/budgets",
+        json={**BUDGET_PAYLOAD, "name": "Food Budget", "category_id": zomato["id"]},
+        headers=auth_headers,
+    ).json()["data"]
+    assert budget["category_id"] == food["id"], "Budget did not snap to the main category"
+
+    # 3. Log an expense on the leaf category
+    client.post(
+        "/api/v1/expenses",
+        json={
+            "amount": 800.0,
+            "expense_date": str(date.today()),
+            "description": "Dinner",
+            "category_id": zomato["id"],
+            "currency": "INR",
+        },
+        headers=auth_headers,
+    )
+
+    # 4. Recalculate — leaf spend must roll up into the main-category budget
+    from app.api.v1.budgets.service import BudgetService
+    BudgetService().recalculate_spent(budget["id"], db)
+    db.commit()
+
+    refreshed = client.get(
+        f"/api/v1/budgets/{budget['id']}", headers=auth_headers
+    ).json()["data"]
+    assert refreshed["spent"] >= 800.0, f"Leaf spend did not roll up: {refreshed['spent']}"

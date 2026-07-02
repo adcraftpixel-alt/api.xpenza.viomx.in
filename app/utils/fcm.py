@@ -34,21 +34,29 @@ def send_push_notification(
                 cred = credentials.Certificate(cred_dict)
                 firebase_admin.initialize_app(cred)
 
+            merged_data = {**(data or {}), "type": notification_type}
+            # iOS app-icon badge = unread count when the caller supplied it.
+            try:
+                badge = int(merged_data.get("badge", 1))
+            except (TypeError, ValueError):
+                badge = 1
+
             message = messaging.Message(
                 notification=messaging.Notification(title=title, body=body),
-                data={**(data or {}), "type": notification_type},
+                data=merged_data,
                 token=device_token,
                 android=messaging.AndroidConfig(
                     notification=messaging.AndroidNotification(
                         icon="notification_icon",
-                        color="#1E40AF",
+                        color="#16A344",
                         sound="default",
+                        channel_id="rupexi_default",
                     ),
                     priority="high",
                 ),
                 apns=messaging.APNSConfig(
                     payload=messaging.APNSPayload(
-                        aps=messaging.Aps(sound="default", badge=1)
+                        aps=messaging.Aps(sound="default", badge=badge)
                     )
                 ),
             )

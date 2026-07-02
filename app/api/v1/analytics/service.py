@@ -10,6 +10,7 @@ MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
 # Financial-cycle helpers live in app/utils/period.py (shared across the app).
 from app.utils.period import (  # noqa: E402
     get_month_start_day,
+    get_group_month_start_day,
     period_window,
     resolve_anchor,
     prev_month as _prev_month,
@@ -37,6 +38,17 @@ class AnalyticsService:
             return f"{fg} = :gid", {"gid": str(group.id)}, group
         return f"{ui} = :uid AND {fg} IS NULL", {"uid": user_id}, group
 
+    def _cycle_start_day(self, db: Session, user_id: str, group) -> int:
+        """Cycle start day for the current scope.
+
+        Family scope follows the group's shared cycle; personal scope follows
+        the user's own ``month_start_day``. (Previously family analytics wrongly
+        inherited the *calling* user's personal cycle.)
+        """
+        if group is not None:
+            return get_group_month_start_day(db, group.id)
+        return get_month_start_day(db, user_id)
+
     def get_monthly(self, user_id: str, month: str, db: Session,
                     shared: bool = False) -> dict:
         """month format: YYYY-MM"""
@@ -46,7 +58,9 @@ class AnalyticsService:
             now = datetime.utcnow()
             year, mo = now.year, now.month
 
-        start_day = get_month_start_day(db, user_id)
+        scope_sql, scope_params, group = self._scope(db, user_id, shared)
+
+        start_day = self._cycle_start_day(db, user_id, group)
         ay, am = resolve_anchor(year, mo, start_day, datetime.utcnow().date())
         month_start, month_end = period_window(ay, am, start_day)
         days_in_period = (month_end - month_start).days + 1
@@ -54,8 +68,6 @@ class AnalyticsService:
         # Previous cycle window
         py, pm = _prev_month(ay, am)
         prev_month_start, prev_month_end = period_window(py, pm, start_day)
-
-        scope_sql, scope_params, _grp = self._scope(db, user_id, shared)
 
         # Daily spending across the cycle
         daily = db.execute(text(f"""
@@ -269,11 +281,11 @@ class AnalyticsService:
         """
         from app.models.category import Category
 
-        start_day = get_month_start_day(db, user_id)
+        scope_sql, scope_params, group = self._scope(db, user_id, shared)
+
+        start_day = self._cycle_start_day(db, user_id, group)
         ay, am = resolve_anchor(year, month, start_day, datetime.utcnow().date())
         month_start, month_end = period_window(ay, am, start_day)
-
-        scope_sql, scope_params, group = self._scope(db, user_id, shared)
 
         # 1) Spend grouped by the (deepest) category node the expense links to.
         rows = db.execute(text(f"""

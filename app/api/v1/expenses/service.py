@@ -287,14 +287,25 @@ class ExpenseService:
             try:
                 cy, cm = int(cycle_month[:4]), int(cycle_month[5:7])
                 if shared:
-                    # Family view uses plain calendar months — consistent with the
-                    # family dashboard (/family/expenses). The salary cycle
-                    # (month_start_day) is a personal concept and doesn't apply to
-                    # a shared family book, so using it here would hide family
-                    # expenses dated before the user's cycle start day.
-                    from calendar import monthrange
-                    start_date = date(cy, cm, 1)
-                    end_date = date(cy, cm, monthrange(cy, cm)[1])
+                    # Family view follows the family group's shared financial
+                    # cycle (its own month_start_day) — consistent with the
+                    # family dashboard (/family/expenses) and family analytics.
+                    # This is the GROUP's cycle, not the calling user's personal
+                    # one. Falls back to a calendar month if the user has no group.
+                    from datetime import datetime as _dt
+                    from app.api.v1.family.service import FamilyService
+                    from app.utils.period import (
+                        get_group_month_start_day, period_window, resolve_anchor,
+                    )
+                    group = FamilyService()._get_user_group(db, user_id)
+                    if group is not None:
+                        sd = get_group_month_start_day(db, group.id)
+                        ay, am = resolve_anchor(cy, cm, sd, _dt.utcnow().date())
+                        start_date, end_date = period_window(ay, am, sd)
+                    else:
+                        from calendar import monthrange
+                        start_date = date(cy, cm, 1)
+                        end_date = date(cy, cm, monthrange(cy, cm)[1])
                 else:
                     # Personal view honours the user's financial cycle / salary day.
                     from datetime import datetime as _dt

@@ -4,7 +4,7 @@ from app.database import get_db
 from app.core.dependencies import get_current_active_user
 from app.api.v1.family.schemas import (
     CreateGroupRequest, InviteMemberRequest, AcceptInviteRequest,
-    SetContributionRequest,
+    SetContributionRequest, UpdateGroupSettingsRequest,
 )
 from app.api.v1.family.service import FamilyService
 from app.utils.response import success
@@ -30,6 +30,17 @@ def get_my_group(
 ):
     group = service.get_my_group(db, str(current_user.id))
     return success(group)
+
+
+@router.patch("/groups/settings")
+def update_group_settings(
+    data: UpdateGroupSettingsRequest,
+    current_user=Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    group = service.update_group_settings(
+        db, str(current_user.id), data.month_start_day)
+    return success(group, message="Family monthly cycle updated")
 
 
 @router.post("/invite")
