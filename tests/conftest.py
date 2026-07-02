@@ -29,6 +29,11 @@ def setup_test_db():
     )
     Base.metadata.create_all(bind=engine)
     yield
+    # user_device_tokens is created via raw SQL (separate Base) and has an FK to
+    # users, so it isn't in Base.metadata — drop it (CASCADE) before drop_all,
+    # else dropping `users` fails with DependentObjectsStillExist.
+    with engine.begin() as conn:
+        conn.execute(text("DROP TABLE IF EXISTS user_device_tokens CASCADE"))
     Base.metadata.drop_all(bind=engine)
 
 

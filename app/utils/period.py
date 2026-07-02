@@ -40,19 +40,24 @@ def get_month_start_day(db, user_id: str) -> int:
 
 
 def get_group_month_start_day(db, group_id: str) -> int:
-    """Read the family group's configured cycle start day (default 1).
+    """Cycle start day for a family group's shared book/analytics.
 
-    This is the shared, group-wide cycle used by the family book/analytics —
-    independent of any member's personal ``month_start_day`` preference.
+    The family cycle AUTO-FOLLOWS the group owner's (creator's) personal
+    ``month_start_day`` — so the shared book always matches the creator's
+    salary cycle, with no separate per-group setting to configure. Works for
+    groups created before this behaviour existed (reads live from the owner's
+    preference; no backfill needed).
     """
     try:
         from app.models.family_group import FamilyGroup
-        val = (
-            db.query(FamilyGroup.month_start_day)
+        created_by = (
+            db.query(FamilyGroup.created_by)
             .filter(FamilyGroup.id == str(group_id))
             .scalar()
         )
-        return clamp_day(val) if val else 1
+        if not created_by:
+            return 1
+        return get_month_start_day(db, str(created_by))
     except Exception:
         return 1
 

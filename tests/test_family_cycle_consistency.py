@@ -95,3 +95,23 @@ def test_family_endpoints_agree_on_cycle_window(client):
     # Family expenses must NOT leak into personal
     for fid in inside + outside:
         assert fid not in pers_ids
+
+    # 4) Auto-follow: changing the OWNER's personal cycle changes the family
+    #    cycle too — without any group-level setting call. Prove the family
+    #    window shifts to day 15 (2025-03-15 .. 2025-04-14): the 03-10 expense
+    #    drops out and the 04-08 expense (previously outside) comes in.
+    r = client.put("/api/v1/users/preferences",
+                   json={"month_start_day": 15}, headers=headers)
+    assert r.status_code == 200, r.text
+
+    me = client.get("/api/v1/family/groups/me", headers=headers)
+    assert me.json()["data"]["month_start_day"] == 15, "family didn't follow owner"
+
+    fam2 = client.get("/api/v1/family/expenses?year=2025&month=3", headers=headers)
+    fam2_data = fam2.json()["data"]
+    assert fam2_data["month_start_day"] == 15
+    assert fam2_data["period_start"] == "2025-03-15"
+    assert fam2_data["period_end"] == "2025-04-14"
+    fam2_ids = {e["id"] for e in fam2_data["expenses"]}
+    assert inside[0] not in fam2_ids       # 2025-03-10 now before the window
+    assert outside[1] in fam2_ids          # 2025-04-08 now inside the window

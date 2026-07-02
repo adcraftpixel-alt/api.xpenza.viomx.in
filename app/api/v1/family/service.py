@@ -8,6 +8,7 @@ from app.models.budget import Budget
 from app.models.user import User
 from app.core.exceptions import NotFoundError, ForbiddenError, BadRequestError
 from app.api.v1.family.schemas import CreateGroupRequest, InviteMemberRequest
+from app.utils.period import get_group_month_start_day
 
 
 def _same_phone(a: str, b: str) -> bool:
@@ -29,12 +30,15 @@ def _member_to_dict(m: FamilyGroupMember) -> dict:
     }
 
 
-def _group_to_dict(g: FamilyGroup) -> dict:
+def _group_to_dict(g: FamilyGroup, month_start_day: Optional[int] = None) -> dict:
+    # The family cycle auto-follows the owner's personal cycle; callers pass the
+    # resolved effective value. Fall back to the stored column if not provided.
+    effective = month_start_day if month_start_day is not None else int(g.month_start_day or 1)
     return {
         "id": str(g.id),
         "name": g.name,
         "created_by": str(g.created_by),
-        "month_start_day": int(g.month_start_day or 1),
+        "month_start_day": int(effective),
         "members": [_member_to_dict(m) for m in g.members],
     }
 
@@ -126,7 +130,7 @@ class FamilyService:
         group.month_start_day = clamp_day(month_start_day)
         db.commit()
         db.refresh(group)
-        return _group_to_dict(group)
+        return _group_to_dict(group, get_group_month_start_day(db, group.id))
 
     def _creator_cycle_start_day(self, db: Session, user_id: str) -> int:
         """The group's initial shared cycle = the creator's personal
@@ -173,13 +177,13 @@ class FamilyService:
         seed_category_tree(db, user_id=user_id, family_group_id=str(group.id))
 
         db.refresh(group)
-        return _group_to_dict(group)
+        return _group_to_dict(group, get_group_month_start_day(db, group.id))
 
     def get_my_group(self, db: Session, user_id: str) -> Optional[dict]:
         group = self._get_user_group(db, user_id)
         if not group:
             return None
-        return _group_to_dict(group)
+        return _group_to_dict(group, get_group_month_start_day(db, group.id))
 
     def invite_member(self, db: Session, user_id: str, data: InviteMemberRequest) -> dict:
         group = self._get_user_group(db, user_id)
