@@ -128,13 +128,24 @@ class FamilyService:
         db.refresh(group)
         return _group_to_dict(group)
 
+    def _creator_cycle_start_day(self, db: Session, user_id: str) -> int:
+        """The group's initial shared cycle = the creator's personal
+        month_start_day, so the family book follows the same salary cycle out
+        of the box (admins can change it later via group settings)."""
+        from app.utils.period import get_month_start_day
+        return get_month_start_day(db, user_id)
+
     def create_group(self, db: Session, user_id: str, data: CreateGroupRequest) -> dict:
         existing = self._get_user_group(db, user_id)
         if existing:
             raise BadRequestError("You already belong to a family group")
 
         user = db.query(User).filter(User.id == user_id).first()
-        group = FamilyGroup(name=data.name, created_by=user_id)
+        group = FamilyGroup(
+            name=data.name,
+            created_by=user_id,
+            month_start_day=self._creator_cycle_start_day(db, user_id),
+        )
         db.add(group)
         db.flush()
 
@@ -176,7 +187,11 @@ class FamilyService:
             # Auto-create a default group so the user can invite straight away
             user = db.query(User).filter(User.id == user_id).first()
             group_name = f"{user.name}'s Family" if user and user.name else "My Family"
-            group = FamilyGroup(name=group_name, created_by=user_id)
+            group = FamilyGroup(
+                name=group_name,
+                created_by=user_id,
+                month_start_day=self._creator_cycle_start_day(db, user_id),
+            )
             db.add(group)
             db.flush()
             db.add(FamilyGroupMember(
