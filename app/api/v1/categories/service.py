@@ -32,11 +32,38 @@ def _cat_to_dict(c: Category, include_children: bool = False) -> dict:
 
 class CategoryService:
 
+    def _ensure_family_seeded(
+        self, db: Session, user_id: str, family_group_id: Optional[str]
+    ) -> None:
+        """Lazily seed a family group's shared category tree if it has none.
+
+        Family groups created before category seeding existed (or where the
+        seed was skipped) have an empty shared tree, which makes the family
+        category picker show up empty. Seed it on first read — but only for a
+        group the requesting user actually belongs to.
+        """
+        if not family_group_id:
+            return
+        exists = (
+            db.query(Category.id)
+            .filter(Category.family_group_id == family_group_id)
+            .first()
+        )
+        if exists:
+            return
+        from app.api.v1.family.service import FamilyService
+        group = FamilyService()._get_user_group(db, user_id)
+        if group and str(group.id) == str(family_group_id):
+            from app.api.v1.categories.default_tree import seed_category_tree
+            seed_category_tree(
+                db, user_id=user_id, family_group_id=family_group_id)
+
     # ── Flat list (all user categories, no tree) ──────────────────────────────
 
     def list(
         self, db: Session, user_id: str, family_group_id: Optional[str] = None
     ) -> List[dict]:
+        self._ensure_family_seeded(db, user_id, family_group_id)
         q = db.query(Category)
         if family_group_id:
             q = q.filter(Category.family_group_id == family_group_id)
@@ -59,6 +86,7 @@ class CategoryService:
         Personal scope (family_group_id=None) excludes shared family categories;
         family scope returns the shared tree for that group.
         """
+        self._ensure_family_seeded(db, user_id, family_group_id)
         q = db.query(Category).filter(Category.level == 0)
         if family_group_id:
             q = q.filter(Category.family_group_id == family_group_id)
