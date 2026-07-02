@@ -73,9 +73,13 @@ def get_health_score(db: Session, user_id: str, user: Any | None = None,
             tips       : list[str],
         }
     """
-    from app.utils.period import current_period_window
+    from app.utils.period import (
+        current_period_window_scoped, recent_period_windows_scoped,
+    )
     today = date.today()
-    month_start, month_end = current_period_window(db, user_id, today)
+    # "This month" follows the scope's cycle (family group's cycle when shared).
+    month_start, month_end = current_period_window_scoped(
+        db, user_id, shared, today)
     tips: list[str] = []
     breakdown: dict[str, Any] = {}
 
@@ -152,28 +156,18 @@ def get_health_score(db: Session, user_id: str, user: Any | None = None,
         tips.append("Create category budgets to take control of your spending.")
 
     # ---- expense_consistency (0–30 pts) ---------------------------------
-    # Compare last 3 months of spending; lower coefficient-of-variation => higher score.
+    # Compare the last 3 cycles of spending (scope-aware); lower coefficient-of-
+    # variation => higher score. Newest-first to keep the trend logic below.
     monthly_totals: list[float] = []
-    for i in range(1, 4):
-        ref_month = today.month - i
-        ref_year = today.year
-        if ref_month <= 0:
-            ref_month += 12
-            ref_year -= 1
-        m_start = today.replace(year=ref_year, month=ref_month, day=1)
-        next_month = ref_month + 1
-        next_year = ref_year
-        if next_month > 12:
-            next_month = 1
-            next_year += 1
-        m_end = today.replace(year=next_year, month=next_month, day=1)
-
+    prior_windows = recent_period_windows_scoped(
+        db, user_id, shared, count=3, today=today)  # oldest → newest
+    for m_start, m_end in reversed(prior_windows):   # newest → oldest
         total = float(
             db.query(func.sum(Expense.amount))
             .filter(
                 exp_filter,
                 Expense.expense_date >= m_start,
-                Expense.expense_date < m_end,
+                Expense.expense_date <= m_end,
             )
             .scalar() or 0
         )
@@ -243,37 +237,31 @@ def get_predictions(db: Session, user_id: str, shared: bool = False) -> dict:
             confidence          : float, # 0–1
         }
     """
+    from app.utils.period import (
+        current_period_window_scoped, recent_period_windows_scoped,
+    )
     today = date.today()
     monthly_totals: list[float] = []
     forecast: list[dict] = []
 
     exp_filter, income, _is_family = ai_scope(db, user_id, shared)
 
-    for i in range(1, 4):
-        ref_month = today.month - i
-        ref_year = today.year
-        if ref_month <= 0:
-            ref_month += 12
-            ref_year -= 1
-        m_start = today.replace(year=ref_year, month=ref_month, day=1)
-        next_m = ref_month + 1
-        next_y = ref_year
-        if next_m > 12:
-            next_m = 1
-            next_y += 1
-        m_end = today.replace(year=next_y, month=next_m, day=1)
-
+    # Last 3 cycles (scope-aware), newest → oldest for the trend/avg logic.
+    prior_windows = recent_period_windows_scoped(
+        db, user_id, shared, count=3, today=today)  # oldest → newest
+    for m_start, m_end in reversed(prior_windows):
         actual = float(
             db.query(func.sum(Expense.amount))
             .filter(
                 exp_filter,
                 Expense.expense_date >= m_start,
-                Expense.expense_date < m_end,
+                Expense.expense_date <= m_end,
             )
             .scalar() or 0
         )
         monthly_totals.append(actual)
-        forecast.append({"month": f"{ref_year}-{ref_month:02d}", "actual": round(actual, 2)})
+        forecast.append({"month": f"{m_start.year}-{m_start.month:02d}",
+                         "actual": round(actual, 2)})
 
     forecast = list(reversed(forecast))       # chronological order
 
@@ -288,9 +276,9 @@ def get_predictions(db: Session, user_id: str, shared: bool = False) -> dict:
         elif monthly_totals[0] < monthly_totals[1] * 0.90:
             trend = "decreasing"
 
-    # Top category for current month (financial cycle)
-    from app.utils.period import current_period_window
-    _cyc_start, _cyc_end = current_period_window(db, user_id, today)
+    # Top category for the current cycle (scope-aware).
+    _cyc_start, _cyc_end = current_period_window_scoped(
+        db, user_id, shared, today)
     top_cat_row = (
         db.query(Expense.ai_category, func.sum(Expense.amount).label("total"))
         .filter(

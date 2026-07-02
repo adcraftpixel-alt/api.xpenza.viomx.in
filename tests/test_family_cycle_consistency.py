@@ -70,6 +70,62 @@ def test_family_spend_attribution(client):
     assert totals[neetika_key] == 700, totals     # attributed to the member
 
 
+def test_family_budget_uses_family_cycle_and_all_members(client):
+    """A shared family budget's spend counts ALL members' group expenses in the
+    FAMILY cycle window (not just the owner's, not the owner's personal cycle)."""
+    from datetime import date as _date
+    owner = _register_login(client, "Owner", "owner@example.com", "+919000000020")
+    member = _register_login(client, "Mem", "mem@example.com", "+919000000021")
+    member_id = _me_id(client, member)
+
+    # Owner uses an 8th-of-month cycle → the family group inherits it.
+    client.put("/api/v1/users/preferences",
+               json={"month_start_day": 8}, headers=owner)
+
+    gid = client.post("/api/v1/family/groups", json={"name": "Fam"},
+                      headers=owner).json()["data"]["id"]
+    client.post("/api/v1/family/invite", json={"phone": "+919000000021"},
+                headers=owner)
+    invites = client.get("/api/v1/family/invites/pending",
+                         headers=member).json()["data"]
+    client.post("/api/v1/family/invites/accept",
+                json={"group_id": invites[0]["group_id"]}, headers=member)
+
+    # Pick a root category from the shared family tree.
+    tree = client.get(f"/api/v1/categories/tree?family_group_id={gid}",
+                      headers=owner).json()["data"]
+    assert tree, "family tree empty"
+    cat_id = tree[0]["id"]
+
+    today = _date.today().isoformat()
+    # Owner's family expense + owner-logged spend on behalf of the member,
+    # both in that category and dated today (inside the current cycle).
+    client.post("/api/v1/expenses", json={
+        "amount": 300, "expense_date": today, "description": "owner",
+        "family_group_id": gid, "category_id": cat_id,
+    }, headers=owner)
+    client.post("/api/v1/expenses", json={
+        "amount": 700, "expense_date": today, "description": "member",
+        "family_group_id": gid, "category_id": cat_id,
+        "spent_by_user_id": member_id,
+    }, headers=owner)
+
+    # Shared budget on that category.
+    client.post("/api/v1/budgets", json={
+        "name": "Household", "amount": 5000, "category_id": cat_id,
+        "start_date": today, "is_shared": True,
+    }, headers=owner)
+
+    now = _date.today()
+    budgets = client.get(
+        f"/api/v1/budgets?shared=true&month={now.month}&year={now.year}",
+        headers=owner).json()["data"]
+    assert budgets, "no shared budget returned"
+    b = budgets[0]
+    # Spend = BOTH members' family expenses in the family cycle window = 1000.
+    assert float(b["spent"]) == 1000.0, b
+
+
 def _auth(client, email):
     client.post("/api/v1/auth/register", json={
         "name": "Cycle User", "email": email,

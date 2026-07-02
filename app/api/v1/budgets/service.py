@@ -197,19 +197,34 @@ class BudgetService:
         return CategoryService().get_descendant_ids(db, category_id)
 
     def _spent_for_month(self, b: Budget, db: Session, month: int, year: int) -> float:
-        """Calculate how much was spent against this budget in a specific month
-        (honouring the user's financial cycle / salary-day setting)."""
+        """Calculate how much was spent against this budget in a specific month.
+
+        Shared family budgets follow the FAMILY group's cycle and count ALL
+        members' group-tagged expenses; personal budgets follow the owner's
+        personal cycle and count only their own (non-family) expenses.
+        """
         from sqlalchemy import or_
         from datetime import datetime as _dt
-        from app.utils.period import get_month_start_day, period_window, resolve_anchor
-        start_day = get_month_start_day(db, str(b.user_id))
+        from app.utils.period import (
+            get_month_start_day, get_group_month_start_day,
+            period_window, resolve_anchor,
+        )
+        is_family = bool(b.is_shared and b.family_group_id)
+        if is_family:
+            start_day = get_group_month_start_day(db, str(b.family_group_id))
+        else:
+            start_day = get_month_start_day(db, str(b.user_id))
         ay, am = resolve_anchor(year, month, start_day, _dt.utcnow().date())
         win_start, win_end = period_window(ay, am, start_day)
         query = db.query(func.sum(Expense.amount)).filter(
-            Expense.user_id == b.user_id,
             Expense.expense_date >= win_start,
             Expense.expense_date <= win_end,
         )
+        if is_family:
+            # Whole household: every member's expenses tagged to this group.
+            query = query.filter(Expense.family_group_id == str(b.family_group_id))
+        else:
+            query = query.filter(Expense.user_id == b.user_id)
         if b.category_id:
             # Include expenses from the category AND all its descendants
             cat_ids = self._get_category_ids(db, str(b.category_id))

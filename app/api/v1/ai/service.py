@@ -132,11 +132,13 @@ class AIService:
 
     def get_savings_advice(self, db: Session, user_id: str, user,
                            shared: bool = False) -> List[dict]:
-        from app.utils.period import current_period_window
+        from app.utils.period import current_period_window_scoped
         from app.api.v1.ai.health_service import ai_scope
         advice = []
         today = date.today()
-        month_start, month_end = current_period_window(db, user_id, today)
+        # "This month" follows the scope's cycle (family group's when shared).
+        month_start, month_end = current_period_window_scoped(
+            db, user_id, shared, today)
 
         exp_filter, income, _is_family = ai_scope(db, user_id, shared)
 

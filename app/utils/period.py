@@ -94,3 +94,47 @@ def prev_period_window(db, user_id: str, today: date = None):
     ay, am = resolve_anchor(today.year, today.month, sd, today)
     py, pm = prev_month(ay, am)
     return period_window(py, pm, sd)
+
+
+def scope_month_start_day(db, user_id: str, shared: bool = False) -> int:
+    """Cycle start day for a scope: the family group's cycle (owner's) when
+    shared and in a group; otherwise the user's personal cycle."""
+    if shared:
+        try:
+            from app.api.v1.family.service import FamilyService
+            group = FamilyService()._get_user_group(db, user_id)
+            if group is not None:
+                return get_group_month_start_day(db, group.id)
+        except Exception:
+            pass
+    return get_month_start_day(db, user_id)
+
+
+def current_period_window_scoped(db, user_id: str, shared: bool = False,
+                                 today: date = None):
+    """(start, end) of the current cycle for the scope (family or personal)."""
+    today = today or datetime.utcnow().date()
+    sd = scope_month_start_day(db, user_id, shared)
+    ay, am = resolve_anchor(today.year, today.month, sd, today)
+    return period_window(ay, am, sd)
+
+
+def recent_period_windows_scoped(db, user_id: str, shared: bool = False,
+                                 count: int = 3, include_current: bool = False,
+                                 today: date = None):
+    """List of (start, end) cycle windows, chronological (oldest → newest).
+
+    With include_current=False returns the `count` cycles BEFORE the current
+    one (for trailing trends); with True the current cycle is the last entry.
+    """
+    today = today or datetime.utcnow().date()
+    sd = scope_month_start_day(db, user_id, shared)
+    ay, am = resolve_anchor(today.year, today.month, sd, today)
+    if not include_current:
+        ay, am = prev_month(ay, am)
+    windows = []
+    y, m = ay, am
+    for _ in range(count):
+        windows.append(period_window(y, m, sd))
+        y, m = prev_month(y, m)
+    return list(reversed(windows))
