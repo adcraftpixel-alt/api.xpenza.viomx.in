@@ -26,12 +26,15 @@ def get_monthly(
     # If month param given OR months==1 with no explicit month, use single-month detail
     # Only return list when months > 1 (for dashboard trend chips)
     if months > 1 and month is None:
-        from sqlalchemy import func
-        from app.models.expense import Expense
+        from sqlalchemy import text
         from app.utils.period import (
-            get_month_start_day, period_window, resolve_anchor, prev_month,
+            scope_month_start_day, period_window, resolve_anchor, prev_month,
         )
-        start_day = get_month_start_day(db, str(current_user.id))
+        # Scope-aware: family mode uses the family group's cycle + pooled
+        # expenses; personal mode uses the user's own cycle + expenses.
+        scope_sql, scope_params, _grp = analytics_service._scope(
+            db, str(current_user.id), shared)
+        start_day = scope_month_start_day(db, str(current_user.id), shared)
         cy, cm = resolve_anchor(now.year, now.month, start_day, now.date())
         result = []
         month_names = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
@@ -41,11 +44,11 @@ def get_monthly(
             for _ in range(i):
                 ty, tm = prev_month(ty, tm)
             win_start, win_end = period_window(ty, tm, start_day)
-            total = db.query(func.sum(Expense.amount)).filter(
-                Expense.user_id == str(current_user.id),
-                Expense.expense_date >= win_start,
-                Expense.expense_date <= win_end,
-            ).scalar() or 0.0
+            total = db.execute(text(f"""
+                SELECT COALESCE(SUM(amount), 0) FROM expenses
+                WHERE {scope_sql}
+                  AND expense_date >= :ws AND expense_date <= :we
+            """), {**scope_params, "ws": win_start, "we": win_end}).scalar() or 0.0
             result.append({
                 'month': month_names[tm],
                 'month_num': tm,
