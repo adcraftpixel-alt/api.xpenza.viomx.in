@@ -6,7 +6,7 @@ from app.api.v1.auth.schemas import (
     RegisterRequest, LoginRequest, OTPVerifyRequest, ResendOTPRequest,
     TokenResponse, RefreshTokenRequest, ForgotPasswordRequest,
     ResetPasswordRequest, SocialAuthRequest, LogoutRequest,
-    PhoneRegisterRequest,
+    PhoneRegisterRequest, FirebasePhoneAuthRequest,
 )
 from app.api.v1.auth.service import AuthService, OTPServiceError
 from app.utils.sms import SMSNotConfigured, SMSDeliveryError
@@ -125,6 +125,20 @@ def forgot_password(data: ForgotPasswordRequest, db: Session = Depends(get_db)):
 def reset_password(data: ResetPasswordRequest, db: Session = Depends(get_db)):
     service.reset_password(db, data.email_or_phone, data.otp, data.new_password)
     return success(None, message="Password reset successful")
+
+
+@router.post(
+    "/firebase-verify",
+    response_model=TokenResponse,
+    summary="Exchange a Firebase phone-auth ID token for a Rupexi session",
+)
+def firebase_verify(
+    data: FirebasePhoneAuthRequest, db: Session = Depends(get_db)
+):
+    """Phone verification is performed by Firebase on the device; this endpoint
+    validates the resulting ID token and issues our own access/refresh JWTs.
+    Creates the account on first sign-in."""
+    return service.verify_firebase_phone(db, data.id_token)
 
 
 @router.post("/google")

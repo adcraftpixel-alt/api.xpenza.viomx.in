@@ -15,7 +15,13 @@ from app.core.security import (
     create_refresh_token,
     decode_token,
 )
-from app.core.exceptions import ConflictError, UnauthorizedError, NotFoundError, ValidationError
+from app.core.exceptions import (
+    AppException,
+    ConflictError,
+    UnauthorizedError,
+    NotFoundError,
+    ValidationError,
+)
 from app.models.user import User
 from app.models.user_preference import UserPreference
 from app.api.v1.auth.schemas import (
@@ -122,6 +128,72 @@ def consume_otp(identifier: str, code: str, purpose: str, db: Session) -> bool:
         db.rollback()
         logger.error(f"OTP verification failed (Postgres): {e}")
         return False
+
+
+# Default country used to expand a bare national number into E.164. The apps
+# ship an India-first country picker; change this if you launch elsewhere.
+DEFAULT_COUNTRY_CODE = "91"
+
+
+def _phone_auth_unavailable() -> AppException:
+    """503 for a server-side Firebase misconfiguration.
+
+    Not a 4xx: the client's request was fine, and it is worth retrying once the
+    service account is in place.
+    """
+    return AppException(
+        status_code=503,
+        detail="Phone sign-in is temporarily unavailable. Please try again shortly.",
+    )
+
+
+def normalize_phone(phone: str) -> str:
+    """Return [phone] in E.164 form (``+919876543210``).
+
+    Historically the apps disagreed: the login screen sent a full ``+91...``
+    number while the register screen stripped the prefix, so ``users.phone``
+    holds both shapes. Firebase always reports E.164, so everything is funnelled
+    through here to stop the same person getting two accounts.
+    """
+    if not phone:
+        return phone
+
+    digits = "".join(ch for ch in phone if ch.isdigit() or ch == "+")
+    if digits.startswith("+"):
+        return "+" + "".join(ch for ch in digits if ch.isdigit())
+
+    if digits.startswith("00"):
+        return "+" + digits[2:]
+
+    # Bare national number (10 digits in India) — prepend the default country.
+    if len(digits) <= 10:
+        return f"+{DEFAULT_COUNTRY_CODE}{digits}"
+
+    return "+" + digits
+
+
+def _phone_lookup_candidates(phone: str) -> list[str]:
+    """Every stored spelling of [phone] we might match an existing row on."""
+    e164 = normalize_phone(phone)
+    bare = e164.lstrip("+")
+    candidates = {phone, e164, bare}
+
+    # Strip the country code to recover the legacy bare-national form.
+    if bare.startswith(DEFAULT_COUNTRY_CODE):
+        national = bare[len(DEFAULT_COUNTRY_CODE):]
+        if national:
+            candidates.add(national)
+
+    return [c for c in candidates if c]
+
+
+def _find_user_by_phone(db: Session, phone: str) -> Optional[User]:
+    """Look up a user across every legacy phone format."""
+    return (
+        db.query(User)
+        .filter(User.phone.in_(_phone_lookup_candidates(phone)))
+        .first()
+    )
 
 
 def _build_token_response(user: User) -> TokenResponse:
@@ -346,3 +418,78 @@ class AuthService:
         """Stub for Firebase social auth. In production: verify id_token with Firebase Admin SDK."""
         logger.warning(f"[SOCIAL AUTH STUB] provider={provider}")
         raise ValidationError("Social auth not fully configured. Set up Firebase Admin SDK.")
+
+    def verify_firebase_phone(self, db: Session, id_token: str) -> TokenResponse:
+        """Exchange a Firebase phone-auth ID token for a Rupexi session.
+
+        The SMS/OTP round-trip happens entirely between the app and Firebase.
+        By the time we get here Firebase has already proven the user controls
+        the number, so our only job is to verify the token's signature, trust
+        the ``phone_number`` claim, and issue our own JWTs.
+        """
+        from app.utils.firebase import get_firebase_app
+
+        app = get_firebase_app()
+        if app is None:
+            logger.error("Firebase phone auth attempted but Admin SDK is not configured")
+            raise _phone_auth_unavailable()
+
+        try:
+            from firebase_admin import auth as fb_auth
+        except ImportError:
+            # firebase-admin missing from the image — fail soft rather than 500.
+            logger.error("firebase-admin is not installed; phone auth disabled")
+            raise _phone_auth_unavailable()
+
+        try:
+            # check_revoked=False: these tokens are seconds old and we mint our
+            # own session immediately, so a revocation lookup adds latency for
+            # no benefit.
+            decoded = fb_auth.verify_id_token(id_token, app=app)
+        except Exception as e:
+            logger.warning(f"Firebase ID token rejected: {e}")
+            raise UnauthorizedError("Invalid or expired verification token")
+
+        phone = decoded.get("phone_number")
+        if not phone:
+            # Token is valid but came from a non-phone provider — refuse rather
+            # than creating a phone-less account through the phone endpoint.
+            raise UnauthorizedError("Verification token is not a phone sign-in")
+
+        firebase_uid = decoded.get("uid") or decoded.get("sub")
+        return self._login_verified_phone(db, phone, firebase_uid)
+
+    def _login_verified_phone(
+        self, db: Session, phone_e164: str, firebase_uid: Optional[str]
+    ) -> TokenResponse:
+        """Find-or-create the user behind an already-verified phone number."""
+        user = _find_user_by_phone(db, phone_e164)
+
+        if not user:
+            user = User(
+                name=phone_e164,  # Placeholder — set during onboarding
+                phone=normalize_phone(phone_e164),
+                firebase_uid=firebase_uid,
+                is_verified=True,
+                is_active=True,
+                onboarding_done=False,
+            )
+            db.add(user)
+            db.flush()
+            db.add(UserPreference(user_id=user.id))
+            logger.info(f"New user created via Firebase phone auth: {phone_e164}")
+        else:
+            if not user.is_active:
+                raise UnauthorizedError("Account is suspended")
+            user.is_verified = True
+            # Normalise legacy rows to E.164 on first Firebase login so the
+            # column converges on one format.
+            normalized = normalize_phone(phone_e164)
+            if user.phone != normalized:
+                user.phone = normalized
+            if firebase_uid and user.firebase_uid != firebase_uid:
+                user.firebase_uid = firebase_uid
+
+        db.commit()
+        db.refresh(user)
+        return _build_token_response(user)

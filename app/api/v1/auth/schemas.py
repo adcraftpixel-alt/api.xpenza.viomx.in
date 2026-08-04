@@ -65,5 +65,12 @@ class SocialAuthRequest(BaseModel):
     provider: str  # google | apple
 
 
+class FirebasePhoneAuthRequest(BaseModel):
+    """Firebase phone-auth ID token, obtained client-side after the user enters
+    the SMS code. Carries the verified ``phone_number`` claim."""
+
+    id_token: str
+
+
 class LogoutRequest(BaseModel):
     refresh_token: Optional[str] = None

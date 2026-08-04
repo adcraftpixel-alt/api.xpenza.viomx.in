@@ -17,23 +17,14 @@ def send_push_notification(
     if not device_token:
         return False
 
-    from app.config import settings
-
-    # Try Firebase Admin SDK
+    # Try Firebase Admin SDK. Initialisation is shared with phone-auth
+    # verification — see app.utils.firebase.
     try:
-        import firebase_admin
-        from firebase_admin import messaging, credentials
+        from firebase_admin import messaging
 
-        firebase_creds = getattr(settings, 'FIREBASE_SERVICE_ACCOUNT', None)
+        from app.utils.firebase import get_firebase_app
 
-        if firebase_creds and firebase_creds not in ('', '{}'):
-            # Initialize if not already done
-            if not firebase_admin._apps:
-                import json
-                cred_dict = json.loads(firebase_creds) if isinstance(firebase_creds, str) else firebase_creds
-                cred = credentials.Certificate(cred_dict)
-                firebase_admin.initialize_app(cred)
-
+        if get_firebase_app() is not None:
             merged_data = {**(data or {}), "type": notification_type}
             # iOS app-icon badge = unread count when the caller supplied it.
             try:
