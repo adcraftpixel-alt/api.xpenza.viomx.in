@@ -1,11 +1,26 @@
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status, Header
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 from app.database import get_db
+from app.config import settings
 from app.core.security import decode_token
 from app.core.exceptions import UnauthorizedError, ForbiddenError
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/token")
+
+
+def verify_service_key(x_service_key: str = Header(None, alias="X-Service-Key")):
+    """Machine-to-machine auth for the VIOMX Control Hub service API.
+
+    Requires SERVICE_API_KEY to be configured; a missing/blank config means the
+    service API is disabled (no implicit open access).
+    """
+    expected = settings.SERVICE_API_KEY
+    if not expected:
+        raise ForbiddenError("Service API is not enabled")
+    if not x_service_key or x_service_key != expected:
+        raise UnauthorizedError("Invalid service key")
+    return True
 
 
 def get_current_user(

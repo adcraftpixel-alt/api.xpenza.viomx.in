@@ -15,7 +15,10 @@ class BillingPlan(Base):
     price_yearly = Column(Numeric(10, 2), nullable=True)
     stripe_price_id_monthly = Column(String(255), nullable=True)
     stripe_price_id_yearly = Column(String(255), nullable=True)
+    razorpay_plan_id = Column(String(255), nullable=True)
     features = Column(JSON, nullable=True)
+    # Per-plan enforcement caps synced from the Control Hub (source of truth).
+    caps = Column(JSON, nullable=True)
     is_active = Column(Boolean, default=True, nullable=False)
 
     user_subscriptions = relationship("UserSubscription", back_populates="plan")
@@ -28,7 +31,11 @@ class UserSubscription(Base):
     user_id = Column(UUID(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     plan_id = Column(UUID(as_uuid=False), ForeignKey("billing_plans.id", ondelete="SET NULL"), nullable=True)
     stripe_subscription_id = Column(String(255), unique=True, nullable=True)
+    razorpay_subscription_id = Column(String(255), unique=True, nullable=True)
+    gateway = Column(String(20), default="razorpay", nullable=False)  # razorpay | stripe
+    # status values: trialing | active | past_due | halted | canceled | created
     status = Column(String(50), default="active", nullable=False)
+    trial_end = Column(DateTime, nullable=True)
     current_period_start = Column(DateTime, nullable=True)
     current_period_end = Column(DateTime, nullable=True)
     cancel_at_period_end = Column(Boolean, default=False, nullable=False)

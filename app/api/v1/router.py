@@ -19,6 +19,7 @@ from app.api.v1.content.router import router as content_router
 from app.api.v1.support.router import router as support_router
 from app.api.v1.family.router import router as family_router
 from app.api.v1.wallets.router import router as wallets_router
+from app.api.v1.service.router import router as service_router
 
 router = APIRouter()
 
@@ -41,3 +42,4 @@ router.include_router(content_router, prefix="/api/v1/content")
 router.include_router(support_router, prefix="/api/v1/support")
 router.include_router(family_router, prefix="/api/v1/family")
 router.include_router(wallets_router, prefix="/api/v1/wallets")
+router.include_router(service_router, prefix="/api/v1/service")

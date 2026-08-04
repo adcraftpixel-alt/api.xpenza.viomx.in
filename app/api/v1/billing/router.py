@@ -17,9 +17,30 @@ class CheckoutRequest(BaseModel):
     interval: str = "monthly"  # monthly | yearly
 
 
+class SubscribeRequest(BaseModel):
+    plan_id: str
+
+
 @router.get("/plans")
 def get_plans(db: Session = Depends(get_db)):
     return success(billing_service.get_plans(db))
+
+
+@router.post("/subscribe")
+def subscribe(
+    request: SubscribeRequest,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    """Start the free trial + ₹199/mo Razorpay auto-pay mandate."""
+    from fastapi import HTTPException
+    try:
+        result = billing_service.create_razorpay_subscription(
+            current_user, request.plan_id, db
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return success(result, message="Subscription created — authorise the mandate to start your trial")
 
 
 @router.post("/checkout")
@@ -91,3 +112,29 @@ async def stripe_webhook(
     except ValueError as e:
         from fastapi import HTTPException
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/razorpay/webhook")
+async def razorpay_webhook(
+    request: Request,
+    x_razorpay_signature: Optional[str] = Header(None, alias="x-razorpay-signature"),
+    db: Session = Depends(get_db),
+):
+    """Razorpay subscription lifecycle webhook (authenticated/activated/charged/…)."""
+    import json
+    from app.api.v1.billing.razorpay_service import razorpay_service
+
+    payload = await request.body()
+
+    # Verify signature (no-op in dev/test when webhook secret is unset).
+    if not razorpay_service.verify_webhook_signature(payload, x_razorpay_signature or ""):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail="Invalid webhook signature")
+
+    try:
+        body = json.loads(payload)
+    except Exception:
+        return {"received": True}
+
+    billing_service.handle_razorpay_webhook(body.get("event", ""), body, db)
+    return {"received": True}

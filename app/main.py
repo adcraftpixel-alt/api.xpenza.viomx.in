@@ -171,7 +171,8 @@ def _seed_billing_plans():
             return
         plans = [
             BillingPlan(name="Free", price_monthly=0, price_yearly=0, is_active=True),
-            BillingPlan(name="Pro", price_monthly=299, price_yearly=2499, is_active=True),
+            # ₹199/mo is the Razorpay auto-pay plan (mandate amount = price_monthly).
+            BillingPlan(name="Pro", price_monthly=199, price_yearly=1999, is_active=True),
             BillingPlan(name="Business", price_monthly=799, price_yearly=6999, is_active=True),
             BillingPlan(name="Enterprise", price_monthly=None, price_yearly=None, is_active=True),
         ]

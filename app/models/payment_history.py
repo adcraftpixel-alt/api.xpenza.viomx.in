@@ -14,6 +14,9 @@ class PaymentHistory(Base):
     subscription_id = Column(UUID(as_uuid=False), ForeignKey("user_subscriptions.id", ondelete="SET NULL"), nullable=True)
     stripe_invoice_id = Column(String(255), nullable=True)
     stripe_payment_id = Column(String(255), nullable=True)
+    razorpay_invoice_id = Column(String(255), nullable=True)
+    razorpay_payment_id = Column(String(255), nullable=True)
+    gateway = Column(String(20), nullable=True)  # razorpay | stripe
     amount = Column(Numeric(10, 2), nullable=True)
     currency = Column(String(10), default="INR", nullable=False)
     status = Column(String(50), nullable=True)

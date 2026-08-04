@@ -54,10 +54,33 @@ def get_user_plan(user_id: str, db: Session) -> str:
     result = db.execute(text("""
         SELECT bp.name FROM user_subscriptions us
         JOIN billing_plans bp ON bp.id = us.plan_id
-        WHERE us.user_id = :uid AND us.status = 'active'
+        WHERE us.user_id = :uid AND us.status IN ('active', 'trialing')
         LIMIT 1
     """), {"uid": user_id}).fetchone()
     return result.name if result else "Free"
+
+
+def get_plan_caps(plan_name: str, db: Session) -> dict:
+    """Resolve enforcement caps for a plan.
+
+    Prefers caps synced from the Control Hub (billing_plans.caps); falls back to
+    the built-in defaults so enforcement still works if the Hub is unconfigured.
+    """
+    import json
+
+    row = db.execute(
+        text("SELECT caps FROM billing_plans WHERE name = :n LIMIT 1"),
+        {"n": plan_name},
+    ).fetchone()
+    caps = row.caps if row else None
+    if isinstance(caps, str):
+        try:
+            caps = json.loads(caps)
+        except (ValueError, TypeError):
+            caps = None
+    if caps:
+        return caps
+    return PLAN_LIMITS.get(plan_name, PLAN_LIMITS["Free"])
 
 
 def require_feature(feature: str):
@@ -98,7 +121,7 @@ def require_feature(feature: str):
         db: Session = Depends(get_db),
     ):
         plan = get_user_plan(str(current_user.id), db)
-        limits = PLAN_LIMITS.get(plan, PLAN_LIMITS["Free"])
+        limits = get_plan_caps(plan, db)
         if not limits.get(feature, False):
             raise HTTPException(
                 status_code=403,

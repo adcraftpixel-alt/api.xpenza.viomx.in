@@ -1,10 +1,12 @@
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 import uuid
 
+from app.config import settings
 from app.api.v1.billing.stripe_service import stripe_service
+from app.api.v1.billing.razorpay_service import razorpay_service, PLAN_AMOUNT_PAISE
 from app.models.billing import BillingPlan, UserSubscription
 from app.models.payment_history import PaymentHistory
 from app.models.user import User
@@ -13,7 +15,43 @@ from app.utils.response import success
 
 class BillingService:
 
+    def _sync_plans_from_hub(self, db: Session) -> None:
+        """Pull plans/pricing/caps from the Control Hub (source of truth)."""
+        from app.services import control_hub
+
+        hub_plans = control_hub.fetch_plans()
+        if not hub_plans:
+            return
+        hub_names = set()
+        for hp in hub_plans:
+            name = hp.get("name")
+            if not name:
+                continue
+            hub_names.add(name)
+            plan = db.query(BillingPlan).filter(BillingPlan.name == name).first()
+            if not plan:
+                plan = BillingPlan(id=str(uuid.uuid4()), name=name)
+                db.add(plan)
+            plan.is_active = True
+            plan.price_monthly = hp.get("monthly_price") or 0
+            plan.price_yearly = hp.get("yearly_price") or 0
+            plan.features = hp.get("features") or []
+            plan.caps = hp.get("caps") or {}
+
+        # The Hub is the source of truth: hide any local plan it no longer offers
+        # (e.g. Free/Business) so /billing/plans returns exactly the Hub's plans.
+        # Rows are kept (deactivated) so downgrade/fallback lookups by name still work.
+        for p in db.query(BillingPlan).filter(BillingPlan.is_active == True).all():
+            if p.name not in hub_names:
+                p.is_active = False
+        db.commit()
+
     def get_plans(self, db: Session) -> list:
+        # Keep local plans in sync with the Control Hub before returning them.
+        try:
+            self._sync_plans_from_hub(db)
+        except Exception:
+            db.rollback()  # never let a Hub hiccup break the pricing screen
         plans = db.query(BillingPlan).filter(BillingPlan.is_active == True).all()
         return [
             {
@@ -23,6 +61,7 @@ class BillingService:
                 "price_yearly": float(p.price_yearly) if p.price_yearly else 0,
                 "stripe_price_id_monthly": p.stripe_price_id_monthly,
                 "stripe_price_id_yearly": p.stripe_price_id_yearly,
+                "razorpay_plan_id": p.razorpay_plan_id,
                 "features": p.features or {},
                 "is_active": p.is_active,
             }
@@ -55,6 +94,212 @@ class BillingService:
         )
         return result
 
+    # ── Razorpay: trial + ₹199/mo auto-pay ──────────────────────────────────
+    def create_razorpay_subscription(self, user: User, plan_id: str, db: Session) -> dict:
+        """
+        Start the trial → auto-pay flow.
+
+        Creates a Razorpay Subscription whose first ₹199 debit is `TRIAL_DAYS` in the
+        future (the free trial). Mandate is authorised on the mobile Razorpay Checkout;
+        the ₹1 validation charge is done + auto-refunded by Razorpay. We persist a local
+        subscription row in 'created' state; webhooks move it to trialing/active.
+        """
+        plan = db.query(BillingPlan).filter(BillingPlan.id == plan_id).first()
+        if not plan:
+            raise ValueError("Plan not found")
+
+        # Lazily create the Razorpay Plan the first time this plan is subscribed to.
+        if not plan.razorpay_plan_id:
+            amount_paise = int(float(plan.price_monthly) * 100) if plan.price_monthly else PLAN_AMOUNT_PAISE
+            plan.razorpay_plan_id = razorpay_service.create_plan(
+                f"{plan.name} Monthly", amount_paise or PLAN_AMOUNT_PAISE
+            )
+            db.commit()
+
+        # Guard against stacking / trial abuse: one active mandate per user.
+        existing = db.query(UserSubscription).filter(
+            UserSubscription.user_id == user.id
+        ).first()
+        if existing and existing.status in ("trialing", "active", "past_due"):
+            raise ValueError("You already have an active subscription")
+
+        trial_days = settings.TRIAL_DAYS
+        trial_end = datetime.utcnow() + timedelta(days=trial_days)
+        start_at = int(trial_end.timestamp())
+
+        result = razorpay_service.create_subscription(
+            plan_id=plan.razorpay_plan_id,
+            start_at=start_at,
+            user_id=str(user.id),
+            notify_email=user.email,
+            notify_phone=user.phone,
+        )
+
+        if existing:
+            existing.plan_id = plan.id
+            existing.gateway = "razorpay"
+            existing.razorpay_subscription_id = result["subscription_id"]
+            existing.status = "created"
+            existing.trial_end = trial_end
+            existing.cancel_at_period_end = False
+        else:
+            db.add(UserSubscription(
+                id=str(uuid.uuid4()),
+                user_id=user.id,
+                plan_id=plan.id,
+                gateway="razorpay",
+                razorpay_subscription_id=result["subscription_id"],
+                status="created",
+                trial_end=trial_end,
+            ))
+        db.commit()
+
+        return {
+            "subscription_id": result["subscription_id"],
+            "razorpay_key_id": settings.RAZORPAY_KEY_ID,
+            "short_url": result.get("short_url"),
+            "plan": plan.name,
+            "amount": float(plan.price_monthly) if plan.price_monthly else 199.0,
+            "currency": "INR",
+            "trial_end": trial_end.isoformat(),
+            "trial_days": trial_days,
+        }
+
+    def _report_purchase_to_hub(
+        self, db: Session, sub: UserSubscription, amount: float,
+        payment_id: str, status: str, is_trial: bool,
+    ):
+        """Report a buyer + purchase to the Control Hub (best-effort)."""
+        from app.services import control_hub
+
+        if not control_hub.is_configured():
+            return
+        try:
+            user = db.query(User).filter(User.id == sub.user_id).first()
+            plan = db.query(BillingPlan).filter(BillingPlan.id == sub.plan_id).first()
+            if not user:
+                return
+            control_hub.report_purchase({
+                "external_user_id": str(user.id),
+                "email": user.email,
+                "name": user.name,
+                "plan_name": plan.name if plan else "Pro",
+                "amount": float(amount or 0),
+                "currency": "INR",
+                "payment_id": payment_id,
+                "gateway": sub.gateway or "razorpay",
+                "status": status,
+                "billing_cycle": "monthly",
+                "is_trial": is_trial,
+                "period_end": sub.current_period_end.isoformat() if sub.current_period_end else None,
+            })
+        except Exception:
+            pass  # never let reporting break billing
+
+    def handle_razorpay_webhook(self, event: str, body: dict, db: Session):
+        """React to Razorpay subscription lifecycle events (state machine)."""
+        payload = body.get("payload", {})
+        sub_entity = (payload.get("subscription", {}) or {}).get("entity", {}) or {}
+        payment_entity = (payload.get("payment", {}) or {}).get("entity", {}) or {}
+
+        if event == "subscription.authenticated":
+            # Mandate registered; free trial running.
+            self._rzp_set_status(sub_entity, "trialing", db)
+            sub = self._rzp_find(sub_entity, db)
+            if sub:
+                self._report_purchase_to_hub(
+                    db, sub, amount=0,
+                    payment_id=f"trial_{sub.razorpay_subscription_id}",
+                    status="trial", is_trial=True,
+                )
+        elif event == "subscription.activated":
+            # First ₹199 debit succeeded at trial end.
+            self._rzp_set_status(sub_entity, "active", db)
+        elif event == "subscription.charged":
+            self._rzp_handle_charged(sub_entity, payment_entity, db)
+        elif event == "subscription.pending":
+            # A recurring debit failed; Razorpay retrying.
+            self._rzp_set_status(sub_entity, "past_due", db)
+        elif event == "subscription.halted":
+            # Retries exhausted.
+            self._rzp_downgrade(sub_entity, "halted", db)
+        elif event in ("subscription.cancelled", "subscription.completed"):
+            self._rzp_downgrade(sub_entity, "canceled", db)
+
+    def _rzp_find(self, sub_entity: dict, db: Session) -> Optional[UserSubscription]:
+        sub_id = sub_entity.get("id")
+        if not sub_id:
+            return None
+        return db.query(UserSubscription).filter(
+            UserSubscription.razorpay_subscription_id == sub_id
+        ).first()
+
+    def _rzp_apply_period(self, sub: UserSubscription, sub_entity: dict):
+        cs, ce = sub_entity.get("current_start"), sub_entity.get("current_end")
+        if cs:
+            sub.current_period_start = datetime.fromtimestamp(cs)
+        if ce:
+            sub.current_period_end = datetime.fromtimestamp(ce)
+
+    def _rzp_set_status(self, sub_entity: dict, status: str, db: Session):
+        sub = self._rzp_find(sub_entity, db)
+        if not sub:
+            return
+        sub.status = status
+        self._rzp_apply_period(sub, sub_entity)
+        db.commit()
+
+    def _rzp_handle_charged(self, sub_entity: dict, payment_entity: dict, db: Session):
+        sub = self._rzp_find(sub_entity, db)
+        if not sub:
+            return
+        sub.status = "active"
+        self._rzp_apply_period(sub, sub_entity)
+
+        pay_id = payment_entity.get("id")
+        # Idempotency: Razorpay retries webhooks — skip if already recorded.
+        if pay_id:
+            dup = db.query(PaymentHistory).filter(
+                PaymentHistory.razorpay_payment_id == pay_id
+            ).first()
+            if dup:
+                db.commit()
+                return
+
+        amt = (payment_entity.get("amount", 0) / 100) if payment_entity.get("amount") else None
+        db.add(PaymentHistory(
+            id=str(uuid.uuid4()),
+            user_id=sub.user_id,
+            subscription_id=sub.id,
+            razorpay_payment_id=pay_id,
+            razorpay_invoice_id=sub_entity.get("id"),
+            gateway="razorpay",
+            amount=amt,
+            currency=(payment_entity.get("currency") or "INR").upper(),
+            status="paid",
+            paid_at=datetime.utcnow(),
+        ))
+        db.commit()
+
+        # Report the successful charge to the Control Hub (buyer + transaction).
+        self._report_purchase_to_hub(
+            db, sub, amount=amt or 0,
+            payment_id=pay_id or f"charge_{sub.razorpay_subscription_id}",
+            status="success", is_trial=False,
+        )
+
+    def _rzp_downgrade(self, sub_entity: dict, status: str, db: Session):
+        sub = self._rzp_find(sub_entity, db)
+        if not sub:
+            return
+        sub.status = status
+        free_plan = db.execute(text(
+            "SELECT id FROM billing_plans WHERE name = 'Free' LIMIT 1"
+        )).fetchone()
+        if free_plan:
+            sub.plan_id = free_plan.id
+        db.commit()
+
     def _activate_plan(self, user: User, plan: BillingPlan, db: Session):
         """Directly activate plan (for free plan or manual activation)"""
         existing = db.query(UserSubscription).filter(
@@ -82,6 +327,7 @@ class BillingService:
         sub = db.execute(text("""
             SELECT us.id, us.status, us.current_period_start, us.current_period_end,
                    us.cancel_at_period_end, us.stripe_subscription_id,
+                   us.razorpay_subscription_id, us.gateway, us.trial_end,
                    bp.name as plan_name, bp.price_monthly, bp.features
             FROM user_subscriptions us
             JOIN billing_plans bp ON bp.id = us.plan_id
@@ -105,12 +351,16 @@ class BillingService:
             "id": str(sub.id),
             "plan": sub.plan_name,
             "status": sub.status,
+            "gateway": sub.gateway,
+            "is_trialing": sub.status == "trialing",
+            "trial_end": sub.trial_end.isoformat() if sub.trial_end else None,
             "price_monthly": float(sub.price_monthly) if sub.price_monthly else 0,
             "features": sub.features or {},
             "current_period_start": sub.current_period_start.isoformat() if sub.current_period_start else None,
             "current_period_end": sub.current_period_end.isoformat() if sub.current_period_end else None,
             "cancel_at_period_end": sub.cancel_at_period_end,
             "stripe_subscription_id": sub.stripe_subscription_id,
+            "razorpay_subscription_id": sub.razorpay_subscription_id,
         }
 
     def cancel_subscription(self, user_id: str, db: Session) -> dict:
@@ -120,7 +370,10 @@ class BillingService:
         if not sub:
             raise ValueError("No active subscription found")
 
-        if sub.stripe_subscription_id:
+        if sub.gateway == "razorpay" and sub.razorpay_subscription_id:
+            # Cancels the mandate; works during the trial (before any ₹199 debit).
+            razorpay_service.cancel_subscription(sub.razorpay_subscription_id, at_cycle_end=True)
+        elif sub.stripe_subscription_id:
             stripe_service.cancel_subscription(sub.stripe_subscription_id)
 
         sub.cancel_at_period_end = True

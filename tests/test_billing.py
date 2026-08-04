@@ -412,3 +412,216 @@ def test_webhook_unknown_event_type(client):
     )
     assert response.status_code == 200
     assert response.json().get("received") is True
+
+
+# ---------------------------------------------------------------------------
+# Razorpay: trial + ₹199/mo auto-pay mandate
+# ---------------------------------------------------------------------------
+
+def _pro_plan(db):
+    from app.models.billing import BillingPlan
+    return db.query(BillingPlan).filter(BillingPlan.name == "Pro").first()
+
+
+def test_subscribe_creates_trial(client, auth_headers, db):
+    """POST /billing/subscribe creates a Razorpay subscription in 'created' state with a trial."""
+    from app.models.billing import UserSubscription
+
+    pro = _pro_plan(db)
+    assert pro is not None, "Pro plan not seeded"
+
+    resp = client.post(
+        "/api/v1/billing/subscribe",
+        json={"plan_id": str(pro.id)},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    assert data["subscription_id"].startswith("sub_mock")  # mock mode (no keys)
+    assert data["plan"] == "Pro"
+    assert data["amount"] == 199.0
+    assert data["currency"] == "INR"
+    assert data["trial_days"] == 30
+    assert data["trial_end"] is not None
+
+    me = client.get("/api/v1/users/me", headers=auth_headers).json()["data"]
+    db.expire_all()
+    sub = db.query(UserSubscription).filter(
+        UserSubscription.user_id == me["id"]
+    ).first()
+    assert sub is not None
+    assert sub.gateway == "razorpay"
+    assert sub.status == "created"
+    assert sub.trial_end is not None
+    assert sub.razorpay_subscription_id == data["subscription_id"]
+
+
+def test_subscribe_requires_auth(client, db):
+    pro = _pro_plan(db)
+    if not pro:
+        return
+    resp = client.post("/api/v1/billing/subscribe", json={"plan_id": str(pro.id)})
+    assert resp.status_code == 401
+
+
+def test_subscribe_nonexistent_plan(client, auth_headers):
+    resp = client.post(
+        "/api/v1/billing/subscribe",
+        json={"plan_id": "00000000-0000-0000-0000-000000000000"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 400
+
+
+def _rzp_webhook(client, event, sub_id, payment=None, sub_extra=None):
+    entity = {"id": sub_id}
+    if sub_extra:
+        entity.update(sub_extra)
+    payload = {"event": event, "payload": {"subscription": {"entity": entity}}}
+    if payment is not None:
+        payload["payload"]["payment"] = {"entity": payment}
+    return client.post(
+        "/api/v1/billing/razorpay/webhook",
+        content=json.dumps(payload),
+        headers={"Content-Type": "application/json"},
+    )
+
+
+def test_razorpay_webhook_authenticated_then_charged(client, auth_headers, db):
+    """authenticated -> trialing; charged -> active + payment history recorded."""
+    from app.models.billing import UserSubscription
+    from app.models.payment_history import PaymentHistory
+
+    pro = _pro_plan(db)
+    assert pro is not None
+
+    sub_id = client.post(
+        "/api/v1/billing/subscribe",
+        json={"plan_id": str(pro.id)},
+        headers=auth_headers,
+    ).json()["data"]["subscription_id"]
+
+    # authenticated → trialing
+    r1 = _rzp_webhook(client, "subscription.authenticated", sub_id)
+    assert r1.status_code == 200
+    db.expire_all()
+    sub = db.query(UserSubscription).filter(
+        UserSubscription.razorpay_subscription_id == sub_id
+    ).first()
+    assert sub.status == "trialing"
+
+    # charged → active + payment recorded
+    r2 = _rzp_webhook(
+        client, "subscription.charged", sub_id,
+        payment={"id": "pay_rzp_test_001", "amount": 19900, "currency": "INR"},
+        sub_extra={"current_start": 1700000000, "current_end": 1702678400},
+    )
+    assert r2.status_code == 200
+    db.expire_all()
+    sub = db.query(UserSubscription).filter(
+        UserSubscription.razorpay_subscription_id == sub_id
+    ).first()
+    assert sub.status == "active"
+
+    pay = db.query(PaymentHistory).filter(
+        PaymentHistory.razorpay_payment_id == "pay_rzp_test_001"
+    ).first()
+    assert pay is not None
+    assert float(pay.amount) == 199.0
+    assert pay.status == "paid"
+    assert pay.gateway == "razorpay"
+
+
+def test_razorpay_webhook_charged_idempotent(client, auth_headers, db):
+    """Duplicate charged webhook (same payment id) does not double-record."""
+    from app.models.payment_history import PaymentHistory
+
+    pro = _pro_plan(db)
+    assert pro is not None
+    sub_id = client.post(
+        "/api/v1/billing/subscribe",
+        json={"plan_id": str(pro.id)},
+        headers=auth_headers,
+    ).json()["data"]["subscription_id"]
+
+    payment = {"id": "pay_rzp_dup_001", "amount": 19900, "currency": "INR"}
+    _rzp_webhook(client, "subscription.charged", sub_id, payment=payment)
+    _rzp_webhook(client, "subscription.charged", sub_id, payment=payment)
+
+    db.expire_all()
+    count = db.query(PaymentHistory).filter(
+        PaymentHistory.razorpay_payment_id == "pay_rzp_dup_001"
+    ).count()
+    assert count == 1
+
+
+def test_razorpay_webhook_halted_downgrades(client, auth_headers, db):
+    """halted event moves subscription to halted + downgrades to Free plan."""
+    from app.models.billing import UserSubscription, BillingPlan
+
+    pro = _pro_plan(db)
+    assert pro is not None
+    sub_id = client.post(
+        "/api/v1/billing/subscribe",
+        json={"plan_id": str(pro.id)},
+        headers=auth_headers,
+    ).json()["data"]["subscription_id"]
+
+    _rzp_webhook(client, "subscription.halted", sub_id)
+    db.expire_all()
+    sub = db.query(UserSubscription).filter(
+        UserSubscription.razorpay_subscription_id == sub_id
+    ).first()
+    assert sub.status == "halted"
+    free = db.query(BillingPlan).filter(BillingPlan.name == "Free").first()
+    assert sub.plan_id == free.id
+
+
+def test_subscribe_blocks_when_active(client, auth_headers, db):
+    """A second subscribe while trialing/active is rejected (no mandate stacking)."""
+    pro = _pro_plan(db)
+    assert pro is not None
+    sub_id = client.post(
+        "/api/v1/billing/subscribe",
+        json={"plan_id": str(pro.id)},
+        headers=auth_headers,
+    ).json()["data"]["subscription_id"]
+    _rzp_webhook(client, "subscription.authenticated", sub_id)
+
+    resp = client.post(
+        "/api/v1/billing/subscribe",
+        json={"plan_id": str(pro.id)},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 400
+
+
+def test_plans_sync_from_hub_single_plan(client, db, monkeypatch):
+    """When the Control Hub offers a single ₹199 plan, /billing/plans returns only it."""
+    from app.services import control_hub
+
+    monkeypatch.setattr(control_hub, "is_configured", lambda: True)
+    monkeypatch.setattr(
+        control_hub, "fetch_plans",
+        lambda: [{
+            "name": "Pro", "monthly_price": 199, "yearly_price": 1999,
+            "features": ["30-day free trial", "AI Insights"],
+            "caps": {"ai_insights": True, "ocr_scans": 100},
+        }],
+    )
+    resp = client.get("/api/v1/billing/plans")
+    assert resp.status_code == 200
+    plans = resp.json()["data"]
+    assert [p["name"] for p in plans] == ["Pro"]
+    assert plans[0]["price_monthly"] == 199.0
+
+
+def test_razorpay_webhook_bad_json(client):
+    """Malformed webhook body is swallowed gracefully."""
+    resp = client.post(
+        "/api/v1/billing/razorpay/webhook",
+        content="not-json",
+        headers={"Content-Type": "application/json"},
+    )
+    assert resp.status_code == 200
+    assert resp.json().get("received") is True

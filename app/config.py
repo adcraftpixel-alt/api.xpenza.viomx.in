@@ -12,6 +12,19 @@ class Settings(BaseSettings):
     GROQ_API_KEY: str = ""
     STRIPE_SECRET_KEY: str = ""
     STRIPE_WEBHOOK_SECRET: str = ""
+    # Razorpay (INR recurring auto-pay: UPI AutoPay + card e-mandate)
+    RAZORPAY_KEY_ID: str = ""
+    RAZORPAY_KEY_SECRET: str = ""
+    RAZORPAY_WEBHOOK_SECRET: str = ""
+    # Trial length in days before the first ₹199 auto-debit
+    TRIAL_DAYS: int = 30
+    # Machine-to-machine key the VIOMX Control Hub sends to Rupexi (X-Service-Key).
+    SERVICE_API_KEY: str = ""
+    # VIOMX Control Hub — Rupexi pulls plans/caps and reports purchases here.
+    # CONTROL_HUB_KEY is presented as X-Product-Key (must equal RUPEXI_INGEST_KEY on the Hub).
+    CONTROL_HUB_URL: str = ""          # e.g. https://hub.viomx.io/api/v1
+    CONTROL_HUB_KEY: str = ""
+    PRODUCT_CODE: str = "RUPEXI"
     AWS_ACCESS_KEY_ID: str = ""
     AWS_SECRET_ACCESS_KEY: str = ""
     AWS_S3_BUCKET: str = "aifinanceos-uploads"
