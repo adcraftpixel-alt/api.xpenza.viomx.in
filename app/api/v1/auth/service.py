@@ -269,29 +269,10 @@ class AuthService:
         if not consume_otp(phone, otp, "login", db):
             return None
 
-        # Find or auto-create user for this phone
-        user = db.query(User).filter(User.phone == phone).first()
-        if not user:
-            # New user — create account on first OTP verify
-            name = phone  # Default name, user updates in profile
-            user = User(
-                name=name,
-                phone=phone,
-                is_verified=True,
-                is_active=True,
-                onboarding_done=False,
-            )
-            db.add(user)
-            db.flush()
-            pref = UserPreference(user_id=user.id)
-            db.add(pref)
-            logger.info(f"New user created via OTP: {phone}")
-        else:
-            user.is_verified = True
-
-        db.commit()
-        db.refresh(user)
-        return _build_token_response(user)
+        # Shared with Firebase sign-in: matches the user across every legacy
+        # phone format so an existing account is never duplicated, normalises
+        # the row to E.164, and rejects suspended accounts.
+        return self._login_verified_phone(db, phone, None)
 
     def register_phone(self, db: Session, data: PhoneRegisterRequest) -> User:
         existing = db.query(User).filter(User.phone == data.phone).first()
@@ -340,8 +321,8 @@ class AuthService:
             # Let delivery errors propagate so callers can surface them.
             send_sms(phone, body)
         else:
-            # No Twilio credentials (e.g. local dev): log so the flow still works.
-            logger.warning(f"[OTP-DEV] Twilio not configured. {phone} => {otp}")
+            # No MSG91 credentials (e.g. local dev): log so the flow still works.
+            logger.warning(f"[OTP-DEV] MSG91 not configured. {phone} => {otp}")
         return otp
 
     def refresh_token(self, db: Session, refresh_token_str: str) -> TokenResponse:
@@ -381,7 +362,7 @@ class AuthService:
             except Exception as e:
                 logger.warning(f"OTP email failed: {e}")
         else:
-            # Phone number — dispatch via Twilio SMS.
+            # Phone number — dispatch via MSG91 SMS.
             body = f"Rupexi password reset code: {otp}. Valid for 1 hour."
             if sms_configured():
                 try:
@@ -389,7 +370,7 @@ class AuthService:
                 except (SMSNotConfigured, SMSDeliveryError) as e:
                     logger.warning(f"Password-reset OTP SMS failed: {e}")
             else:
-                logger.warning(f"[PWD-RESET-DEV] Twilio not configured. {identifier} => {otp}")
+                logger.warning(f"[PWD-RESET-DEV] MSG91 not configured. {identifier} => {otp}")
         return otp
 
     def forgot_password(self, db: Session, email_or_phone: str) -> str:

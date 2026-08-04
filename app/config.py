@@ -30,11 +30,10 @@ class Settings(BaseSettings):
     AWS_S3_BUCKET: str = "aifinanceos-uploads"
     AWS_REGION: str = "ap-south-1"
     SENDGRID_API_KEY: str = ""
-    # Twilio (SMS OTP delivery)
-    TWILIO_ACCOUNT_SID: str = ""
-    TWILIO_AUTH_TOKEN: str = ""
-    TWILIO_FROM_NUMBER: str = ""          # your Twilio sender number, e.g. +18777804236
-    TWILIO_MESSAGING_SERVICE_SID: str = ""  # optional: use instead of FROM_NUMBER
+    # MSG91 (SMS OTP delivery — replaces Twilio; handles India DLT)
+    MSG91_AUTH_KEY: str = ""
+    MSG91_TEMPLATE_ID: str = ""   # DLT-approved template; required to send
+    MSG91_SENDER_ID: str = ""     # 6-char DLT header, e.g. RUPEXI (optional)
     FRONTEND_URL: str = "http://localhost:3000"
     ADMIN_URL: str = "http://localhost:5173"
     ENVIRONMENT: str = "development"
