@@ -13,7 +13,12 @@ redis==5.0.6
 celery==5.4.0
 boto3==1.34.0
 stripe==9.12.0
+razorpay==1.4.2
+firebase-admin==6.5.0
 openai==1.35.0
+# Imported directly by ocr/ai/sms modules — was only present transitively via
+# the openai SDK, so pin it explicitly.
+httpx==0.27.0
 python-multipart==0.0.9
 aiofiles==23.2.1
 sendgrid==6.11.0
