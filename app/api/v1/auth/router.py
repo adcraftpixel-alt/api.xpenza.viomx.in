@@ -9,7 +9,7 @@ from app.api.v1.auth.schemas import (
     PhoneRegisterRequest, FirebasePhoneAuthRequest,
 )
 from app.api.v1.auth.service import AuthService, OTPServiceError
-from app.utils.sms import SMSNotConfigured, SMSDeliveryError
+from app.utils.whatsapp import WhatsAppNotConfigured, WhatsAppDeliveryError
 from app.utils.response import success, error
 
 router = APIRouter(tags=["Auth"])
@@ -68,7 +68,7 @@ def verify_otp(data: OTPVerifyRequest, db: Session = Depends(get_db)):
 @router.post("/send-otp", summary="Send OTP to phone — creates user if not exists")
 def send_otp(data: ResendOTPRequest, db: Session = Depends(get_db)):
     """
-    Phone-only auth: send a one-time code to the number via SMS (Twilio).
+    Phone-only auth: send a one-time code to the number via WhatsApp.
     Automatically creates the user account if phone not registered.
     """
     from app.models.user import User
@@ -94,7 +94,7 @@ def send_otp(data: ResendOTPRequest, db: Session = Depends(get_db)):
         service.send_otp(data.phone, db)
     except OTPServiceError as e:
         raise HTTPException(status_code=503, detail=str(e))
-    except (SMSNotConfigured, SMSDeliveryError) as e:
+    except (WhatsAppNotConfigured, WhatsAppDeliveryError) as e:
         raise HTTPException(status_code=502, detail=f"Could not send OTP: {e}")
     return success({"phone": data.phone}, message="OTP sent successfully")
 
@@ -105,7 +105,7 @@ def resend_otp(data: ResendOTPRequest, db: Session = Depends(get_db)):
         service.send_otp(data.phone, db)
     except OTPServiceError as e:
         raise HTTPException(status_code=503, detail=str(e))
-    except (SMSNotConfigured, SMSDeliveryError) as e:
+    except (WhatsAppNotConfigured, WhatsAppDeliveryError) as e:
         raise HTTPException(status_code=502, detail=f"Could not send OTP: {e}")
     return success(None, message="OTP sent")
 

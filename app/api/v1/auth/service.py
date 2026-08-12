@@ -32,6 +32,12 @@ from app.api.v1.auth.schemas import (
 )
 from app.utils.email import send_otp_email
 from app.utils.sms import send_sms, sms_configured, SMSNotConfigured, SMSDeliveryError
+from app.utils.whatsapp import (
+    send_whatsapp_otp,
+    whatsapp_configured,
+    WhatsAppNotConfigured,
+    WhatsAppDeliveryError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -316,13 +322,12 @@ class AuthService:
         # only if both are unreachable.
         store_otp(phone, otp, OTP_TTL_SECONDS, "login", db)
 
-        body = f"Rupexi OTP: {otp}. Valid for {OTP_TTL_SECONDS // 60} minutes."
-        if sms_configured():
+        if whatsapp_configured():
             # Let delivery errors propagate so callers can surface them.
-            send_sms(phone, body)
+            send_whatsapp_otp(phone, otp)
         else:
-            # No MSG91 credentials (e.g. local dev): log so the flow still works.
-            logger.warning(f"[OTP-DEV] MSG91 not configured. {phone} => {otp}")
+            # No WhatsApp credentials (e.g. local dev): log so the flow still works.
+            logger.warning(f"[OTP-DEV] WhatsApp not configured. {phone} => {otp}")
         return otp
 
     def refresh_token(self, db: Session, refresh_token_str: str) -> TokenResponse:

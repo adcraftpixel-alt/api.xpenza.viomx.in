@@ -34,6 +34,12 @@ class Settings(BaseSettings):
     MSG91_AUTH_KEY: str = ""
     MSG91_TEMPLATE_ID: str = ""   # DLT-approved template; required to send
     MSG91_SENDER_ID: str = ""     # 6-char DLT header, e.g. RUPEXI (optional)
+    # WhatsApp Business Cloud API (Meta Graph API) — login/register OTP delivery
+    WHATSAPP_ACCESS_TOKEN: str = ""
+    WHATSAPP_PHONE_NUMBER_ID: str = ""    # e.g. 1267262489806885
+    WHATSAPP_TEMPLATE_NAME: str = "rupexi_otp"
+    WHATSAPP_TEMPLATE_LANG: str = "en"
+    WHATSAPP_API_VERSION: str = "v25.0"
     FRONTEND_URL: str = "http://localhost:3000"
     ADMIN_URL: str = "http://localhost:5173"
     ENVIRONMENT: str = "development"
