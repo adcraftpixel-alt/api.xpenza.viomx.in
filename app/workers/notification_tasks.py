@@ -47,9 +47,9 @@ def check_budget_alerts():
 
             # Create notification record
             db.execute(text("""
-                INSERT INTO notifications (id, user_id, title, body, type, data, created_at)
+                INSERT INTO notifications (id, user_id, title, body, type, is_read, data, created_at)
                 VALUES (:id, :uid, :title, :body, 'budget_alert',
-                        :data::jsonb, NOW())
+                        false, CAST(:data AS JSONB), NOW())
             """), {
                 "id": str(uuid.uuid4()),
                 "uid": str(budget.user_id),
@@ -108,9 +108,9 @@ def send_subscription_reminders():
             body = f"₹{sub.amount:,.0f} will be charged on {sub.next_renewal}"
 
             db.execute(text("""
-                INSERT INTO notifications (id, user_id, title, body, type, data, created_at)
+                INSERT INTO notifications (id, user_id, title, body, type, is_read, data, created_at)
                 VALUES (:id, :uid, :title, :body, 'subscription_renewal',
-                        :data::jsonb, NOW())
+                        false, CAST(:data AS JSONB), NOW())
             """), {
                 "id": str(uuid.uuid4()),
                 "uid": str(sub.user_id),

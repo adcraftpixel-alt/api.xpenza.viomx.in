@@ -196,6 +196,52 @@ class BillingService:
         except Exception:
             pass  # never let reporting break billing
 
+    def _notify_trial_started(self, sub: UserSubscription, db: Session):
+        """In-app + push notification telling the user their free month has
+        started and when the first auto-debit happens (best-effort)."""
+        try:
+            plan = db.query(BillingPlan).filter(BillingPlan.id == sub.plan_id).first()
+            price = float(plan.price_monthly) if plan and plan.price_monthly else 0
+            trial_end_label = (
+                sub.trial_end.strftime("%d %b %Y") if sub.trial_end else "your trial end date"
+            )
+            title = "Your free trial has started! 🎉"
+            body = (
+                f"Enjoy 30 days free. ₹{price:,.0f}/month starts automatically on "
+                f"{trial_end_label}. Cancel anytime before then."
+            )
+
+            db.execute(text("""
+                INSERT INTO notifications (id, user_id, title, body, type, is_read, data, created_at)
+                VALUES (:id, :uid, :title, :body, 'trial_started', false, CAST(:data AS JSONB), NOW())
+            """), {
+                "id": str(uuid.uuid4()),
+                "uid": str(sub.user_id),
+                "title": title,
+                "body": body,
+                "data": (
+                    f'{{"amount": {price}, '
+                    f'"trial_end": "{sub.trial_end.isoformat() if sub.trial_end else ""}"}}'
+                ),
+            })
+            db.commit()
+
+            token_row = db.execute(text(
+                "SELECT device_token FROM user_device_tokens WHERE user_id = :uid LIMIT 1"
+            ), {"uid": str(sub.user_id)}).first()
+            if token_row and token_row[0]:
+                from app.utils.fcm import send_push_notification
+                send_push_notification(
+                    token_row[0], title, body,
+                    {"type": "trial_started", "amount": str(price)},
+                    "trial_started",
+                )
+        except Exception:
+            # Never let a notification failure break the billing webhook —
+            # but roll back so a failed INSERT doesn't poison the caller's
+            # transaction for whatever runs next in this request.
+            db.rollback()
+
     def handle_razorpay_webhook(self, event: str, body: dict, db: Session):
         """React to Razorpay subscription lifecycle events (state machine)."""
         payload = body.get("payload", {})
@@ -212,6 +258,7 @@ class BillingService:
                     payment_id=f"trial_{sub.razorpay_subscription_id}",
                     status="trial", is_trial=True,
                 )
+                self._notify_trial_started(sub, db)
         elif event == "subscription.activated":
             # First ₹199 debit succeeded at trial end.
             self._rzp_set_status(sub_entity, "active", db)

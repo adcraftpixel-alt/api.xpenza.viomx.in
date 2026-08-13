@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     SERVICE_API_KEY: str = ""
     # VIOMX Control Hub — Rupexi pulls plans/caps and reports purchases here.
     # CONTROL_HUB_KEY is presented as X-Product-Key (must equal RUPEXI_INGEST_KEY on the Hub).
-    CONTROL_HUB_URL: str = ""          # e.g. https://hub.viomx.io/api/v1
+    CONTROL_HUB_URL: str = ""          # e.g. https://api-controlhub.viomx.in/api/v1
     CONTROL_HUB_KEY: str = ""
     PRODUCT_CODE: str = "RUPEXI"
     AWS_ACCESS_KEY_ID: str = ""
