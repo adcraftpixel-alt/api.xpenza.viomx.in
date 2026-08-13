@@ -478,4 +478,20 @@ class AuthService:
 
         db.commit()
         db.refresh(user)
+
+        # Register (or just confirm) this user as a Tenant in the Control Hub
+        # right at login/registration time — independent of whether they've
+        # started a trial yet, so the Hub has visibility into every registered
+        # user, not just paying ones. Best-effort: never blocks login.
+        try:
+            from app.services import control_hub
+            control_hub.register_tenant(
+                external_user_id=str(user.id),
+                email=user.email or f"{user.phone}@rupexi.phone",
+                name=user.name,
+                phone=user.phone,
+            )
+        except Exception:
+            pass
+
         return _build_token_response(user)

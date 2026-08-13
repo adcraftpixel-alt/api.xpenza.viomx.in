@@ -39,6 +39,29 @@ def fetch_plans() -> list | None:
         return None
 
 
+def register_tenant(external_user_id: str, email: str, name: str | None = None,
+                     phone: str | None = None) -> bool:
+    """Register (or just confirm) this user as a Tenant in the Hub as soon as
+    they sign up/log in — independent of whether they've purchased anything
+    yet, so the Hub has visibility into every registered user, not just
+    paying ones. Best-effort and idempotent: safe to call on every login."""
+    if not is_configured():
+        return False
+    url = f"{settings.CONTROL_HUB_URL.rstrip('/')}/ingest/register"
+    try:
+        resp = httpx.post(url, headers=_headers(), json={
+            "external_user_id": external_user_id,
+            "email": email,
+            "name": name,
+            "phone": phone,
+        }, timeout=_TIMEOUT)
+        resp.raise_for_status()
+        return True
+    except Exception as e:
+        log.warning("control_hub.register_tenant failed: %s", e)
+        return False
+
+
 def report_purchase(payload: dict) -> bool:
     """POST a purchase to the Hub ingest endpoint. Best-effort."""
     if not is_configured():
