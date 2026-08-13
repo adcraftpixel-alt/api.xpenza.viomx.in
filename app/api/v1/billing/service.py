@@ -108,51 +108,61 @@ class BillingService:
         if not plan:
             raise ValueError("Plan not found")
 
-        # Lazily create the Razorpay Plan the first time this plan is subscribed to.
-        if not plan.razorpay_plan_id:
-            amount_paise = int(float(plan.price_monthly) * 100) if plan.price_monthly else PLAN_AMOUNT_PAISE
-            plan.razorpay_plan_id = razorpay_service.create_plan(
-                f"{plan.name} Monthly", amount_paise or PLAN_AMOUNT_PAISE
+        try:
+            # Lazily create the Razorpay Plan the first time this plan is subscribed to.
+            if not plan.razorpay_plan_id:
+                amount_paise = int(float(plan.price_monthly) * 100) if plan.price_monthly else PLAN_AMOUNT_PAISE
+                plan.razorpay_plan_id = razorpay_service.create_plan(
+                    f"{plan.name} Monthly", amount_paise or PLAN_AMOUNT_PAISE
+                )
+                db.commit()
+
+            # Guard against stacking / trial abuse: one active mandate per user.
+            existing = db.query(UserSubscription).filter(
+                UserSubscription.user_id == user.id
+            ).first()
+            if existing and existing.status in ("trialing", "active", "past_due"):
+                raise ValueError("You already have an active subscription")
+
+            trial_days = settings.TRIAL_DAYS
+            trial_end = datetime.utcnow() + timedelta(days=trial_days)
+            start_at = int(trial_end.timestamp())
+
+            result = razorpay_service.create_subscription(
+                plan_id=plan.razorpay_plan_id,
+                start_at=start_at,
+                user_id=str(user.id),
+                notify_email=user.email,
+                notify_phone=user.phone,
             )
+
+            if existing:
+                existing.plan_id = plan.id
+                existing.gateway = "razorpay"
+                existing.razorpay_subscription_id = result["subscription_id"]
+                existing.status = "created"
+                existing.trial_end = trial_end
+                existing.cancel_at_period_end = False
+            else:
+                db.add(UserSubscription(
+                    id=str(uuid.uuid4()),
+                    user_id=user.id,
+                    plan_id=plan.id,
+                    gateway="razorpay",
+                    razorpay_subscription_id=result["subscription_id"],
+                    status="created",
+                    trial_end=trial_end,
+                ))
             db.commit()
-
-        # Guard against stacking / trial abuse: one active mandate per user.
-        existing = db.query(UserSubscription).filter(
-            UserSubscription.user_id == user.id
-        ).first()
-        if existing and existing.status in ("trialing", "active", "past_due"):
-            raise ValueError("You already have an active subscription")
-
-        trial_days = settings.TRIAL_DAYS
-        trial_end = datetime.utcnow() + timedelta(days=trial_days)
-        start_at = int(trial_end.timestamp())
-
-        result = razorpay_service.create_subscription(
-            plan_id=plan.razorpay_plan_id,
-            start_at=start_at,
-            user_id=str(user.id),
-            notify_email=user.email,
-            notify_phone=user.phone,
-        )
-
-        if existing:
-            existing.plan_id = plan.id
-            existing.gateway = "razorpay"
-            existing.razorpay_subscription_id = result["subscription_id"]
-            existing.status = "created"
-            existing.trial_end = trial_end
-            existing.cancel_at_period_end = False
-        else:
-            db.add(UserSubscription(
-                id=str(uuid.uuid4()),
-                user_id=user.id,
-                plan_id=plan.id,
-                gateway="razorpay",
-                razorpay_subscription_id=result["subscription_id"],
-                status="created",
-                trial_end=trial_end,
-            ))
-        db.commit()
+        except ValueError:
+            db.rollback()
+            raise
+        except Exception as e:
+            # Any unexpected DB/runtime failure — roll back so the transaction
+            # isn't left broken for a retry, and surface a real message instead
+            # of letting an opaque 500 reach the client.
+            db.rollback()
+            raise ValueError(f"Could not start subscription: {e}")
 
         return {
             "subscription_id": result["subscription_id"],

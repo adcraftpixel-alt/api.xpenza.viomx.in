@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import APIRouter, Depends, Request, Header
 from sqlalchemy.orm import Session
 from app.database import get_db
@@ -9,6 +11,7 @@ from app.utils.response import success
 from pydantic import BaseModel
 from typing import Optional
 
+logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Billing"])
 
 
@@ -32,7 +35,7 @@ def subscribe(
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ):
-    """Start the free trial + ₹199/mo Razorpay auto-pay mandate."""
+    """Start the free trial + monthly Razorpay auto-pay mandate."""
     from fastapi import HTTPException
     try:
         result = billing_service.create_razorpay_subscription(
@@ -40,6 +43,13 @@ def subscribe(
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        # Anything unexpected (DB hiccup, Razorpay outage, etc.) — log the full
+        # traceback server-side and surface a real message instead of an opaque
+        # 500 with no detail, so failures here are actually diagnosable.
+        logger.exception("POST /billing/subscribe failed")
+        db.rollback()
+        raise HTTPException(status_code=502, detail=f"Could not start subscription: {e}")
     return success(result, message="Subscription created — authorise the mandate to start your trial")
 
 
