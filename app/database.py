@@ -67,6 +67,30 @@ def apply_schema_patches():
         ")",
         "CREATE INDEX IF NOT EXISTS ix_user_device_tokens_user_id "
         "ON user_device_tokens (user_id)",
+        # Razorpay recurring billing (alembic e5f6a7b8c9d0) — written as a real
+        # migration but never applied to prod, since prod's schema is managed
+        # here instead (see the crash-loop warning in Dockerfile). Mirrored
+        # here so /billing/plans and /billing/subscribe stop 500ing.
+        "ALTER TABLE billing_plans ADD COLUMN IF NOT EXISTS razorpay_plan_id VARCHAR(255)",
+        "ALTER TABLE user_subscriptions ADD COLUMN IF NOT EXISTS "
+        "razorpay_subscription_id VARCHAR(255)",
+        "ALTER TABLE user_subscriptions ADD COLUMN IF NOT EXISTS "
+        "gateway VARCHAR(20) NOT NULL DEFAULT 'razorpay'",
+        "ALTER TABLE user_subscriptions ADD COLUMN IF NOT EXISTS trial_end TIMESTAMP",
+        "DO $$ BEGIN "
+        "IF NOT EXISTS (SELECT 1 FROM pg_constraint "
+        "WHERE conname = 'uq_user_subscriptions_razorpay_subscription_id') THEN "
+        "ALTER TABLE user_subscriptions ADD CONSTRAINT "
+        "uq_user_subscriptions_razorpay_subscription_id "
+        "UNIQUE (razorpay_subscription_id); "
+        "END IF; END $$",
+        "ALTER TABLE payment_history ADD COLUMN IF NOT EXISTS "
+        "razorpay_invoice_id VARCHAR(255)",
+        "ALTER TABLE payment_history ADD COLUMN IF NOT EXISTS "
+        "razorpay_payment_id VARCHAR(255)",
+        "ALTER TABLE payment_history ADD COLUMN IF NOT EXISTS gateway VARCHAR(20)",
+        # Control Hub plan-cap enforcement (alembic f6a7b8c9d0e1) — same gap.
+        "ALTER TABLE billing_plans ADD COLUMN IF NOT EXISTS caps JSONB",
     ]
     with engine.begin() as conn:
         for stmt in statements:
