@@ -1,9 +1,12 @@
-"""VIOMX Control Hub service API — read-only, protected by X-Service-Key."""
+"""VIOMX Control Hub service API — protected by X-Service-Key."""
+from typing import Any
+
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.core.dependencies import verify_service_key
+from app.api.v1.billing.service import billing_service
 from app.api.v1.service.service import service_feed
 from app.utils.response import success
 
@@ -57,6 +60,19 @@ def unblock_user(user_id: str, db: Session = Depends(get_db)):
                        message="User unblocked")
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.post("/subscriptions/webhook-relay")
+def subscription_webhook_relay(body: dict[str, Any], db: Session = Depends(get_db)):
+    """The Control Hub relays a Razorpay subscription webhook here after
+    verifying its signature itself — Rupexi holds no Razorpay credentials, so
+    it can't verify the signature on its own. Trust here comes from
+    X-Service-Key (router-level dependency) instead of Razorpay's HMAC.
+    Reuses the exact same state machine as the (now dormant) direct
+    POST /billing/razorpay/webhook path: [body] is the raw, unmodified
+    Razorpay payload, same shape either way."""
+    billing_service.handle_razorpay_webhook(body.get("event", ""), body, db)
+    return success(None)
 
 
 @router.get("/funding")

@@ -6,7 +6,6 @@ import uuid
 
 from app.config import settings
 from app.api.v1.billing.stripe_service import stripe_service
-from app.api.v1.billing.razorpay_service import razorpay_service, PLAN_AMOUNT_PAISE
 from app.models.billing import BillingPlan, UserSubscription
 from app.models.payment_history import PaymentHistory
 from app.models.user import User
@@ -99,24 +98,22 @@ class BillingService:
         """
         Start the trial → auto-pay flow.
 
-        Creates a Razorpay Subscription whose first ₹199 debit is `TRIAL_DAYS` in the
-        future (the free trial). Mandate is authorised on the mobile Razorpay Checkout;
-        the ₹1 validation charge is done + auto-refunded by Razorpay. We persist a local
-        subscription row in 'created' state; webhooks move it to trialing/active.
+        Creates a Razorpay Subscription via the Control Hub — Rupexi holds no
+        Razorpay credentials itself; the Hub creates the Subscription with its
+        centrally-stored secret and returns only the publishable key_id needed
+        by the mobile Razorpay Checkout. The first debit is `TRIAL_DAYS` in the
+        future (the free trial); the ₹1 validation charge during mandate setup
+        is done + auto-refunded by Razorpay. We persist a local subscription row
+        in 'created' state; webhooks (relayed from the Hub) move it to
+        trialing/active.
         """
+        from app.services import control_hub
+
         plan = db.query(BillingPlan).filter(BillingPlan.id == plan_id).first()
         if not plan:
             raise ValueError("Plan not found")
 
         try:
-            # Lazily create the Razorpay Plan the first time this plan is subscribed to.
-            if not plan.razorpay_plan_id:
-                amount_paise = int(float(plan.price_monthly) * 100) if plan.price_monthly else PLAN_AMOUNT_PAISE
-                plan.razorpay_plan_id = razorpay_service.create_plan(
-                    f"{plan.name} Monthly", amount_paise or PLAN_AMOUNT_PAISE
-                )
-                db.commit()
-
             # Guard against stacking / trial abuse: one active mandate per user.
             existing = db.query(UserSubscription).filter(
                 UserSubscription.user_id == user.id
@@ -128,10 +125,9 @@ class BillingService:
             trial_end = datetime.utcnow() + timedelta(days=trial_days)
             start_at = int(trial_end.timestamp())
 
-            result = razorpay_service.create_subscription(
-                plan_id=plan.razorpay_plan_id,
+            result = control_hub.create_subscription(
+                plan_name=plan.name,
                 start_at=start_at,
-                user_id=str(user.id),
                 notify_email=user.email,
                 notify_phone=user.phone,
             )
@@ -157,6 +153,9 @@ class BillingService:
         except ValueError:
             db.rollback()
             raise
+        except (control_hub.HubNotConfigured, control_hub.HubRequestError) as e:
+            db.rollback()
+            raise ValueError(str(e))
         except Exception as e:
             # Any unexpected DB/runtime failure — roll back so the transaction
             # isn't left broken for a retry, and surface a real message instead
@@ -166,10 +165,10 @@ class BillingService:
 
         return {
             "subscription_id": result["subscription_id"],
-            "razorpay_key_id": settings.RAZORPAY_KEY_ID,
+            "razorpay_key_id": result.get("key_id", ""),
             "short_url": result.get("short_url"),
             "plan": plan.name,
-            "amount": float(plan.price_monthly) if plan.price_monthly else 199.0,
+            "amount": float(plan.price_monthly) if plan.price_monthly else 0.0,
             "currency": "INR",
             "trial_end": trial_end.isoformat(),
             "trial_days": trial_days,
@@ -421,6 +420,8 @@ class BillingService:
         }
 
     def cancel_subscription(self, user_id: str, db: Session) -> dict:
+        from app.services import control_hub
+
         sub = db.query(UserSubscription).filter(
             UserSubscription.user_id == user_id
         ).first()
@@ -428,8 +429,12 @@ class BillingService:
             raise ValueError("No active subscription found")
 
         if sub.gateway == "razorpay" and sub.razorpay_subscription_id:
-            # Cancels the mandate; works during the trial (before any ₹199 debit).
-            razorpay_service.cancel_subscription(sub.razorpay_subscription_id, at_cycle_end=True)
+            # Cancels the mandate via the Control Hub; works during the trial
+            # (before any auto-debit) since Rupexi holds no Razorpay credentials.
+            try:
+                control_hub.cancel_subscription(sub.razorpay_subscription_id, at_cycle_end=True)
+            except (control_hub.HubNotConfigured, control_hub.HubRequestError) as e:
+                raise ValueError(str(e))
         elif sub.stripe_subscription_id:
             stripe_service.cancel_subscription(sub.stripe_subscription_id)
 

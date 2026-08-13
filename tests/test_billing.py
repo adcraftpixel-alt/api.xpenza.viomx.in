@@ -423,10 +423,33 @@ def _pro_plan(db):
     return db.query(BillingPlan).filter(BillingPlan.name == "Pro").first()
 
 
-def test_subscribe_creates_trial(client, auth_headers, db):
+def _mock_hub_create_subscription(monkeypatch):
+    """create_razorpay_subscription now calls the Control Hub instead of
+    Razorpay directly (the Hub holds the credentials) — mock that client call
+    the same way test_plans_sync_from_hub_single_plan already mocks
+    control_hub.fetch_plans, so these tests exercise our own state machine
+    without needing real Hub/Razorpay credentials. Keeps the `sub_mock_*`
+    naming so existing assertions (`startswith("sub_mock")`) still read true
+    to their original intent — a fake, not a real, Razorpay subscription."""
+    import uuid as _uuid
+    from app.services import control_hub
+
+    def _fake(plan_name, start_at, notify_email=None, notify_phone=None):
+        return {
+            "subscription_id": f"sub_mock_{_uuid.uuid4().hex[:8]}",
+            "key_id": "rzp_test_mock",
+            "short_url": "https://rzp.mock/checkout/sub_mock",
+            "status": "created",
+        }
+
+    monkeypatch.setattr(control_hub, "create_subscription", _fake)
+
+
+def test_subscribe_creates_trial(client, auth_headers, db, monkeypatch):
     """POST /billing/subscribe creates a Razorpay subscription in 'created' state with a trial."""
     from app.models.billing import UserSubscription
 
+    _mock_hub_create_subscription(monkeypatch)
     pro = _pro_plan(db)
     assert pro is not None, "Pro plan not seeded"
 
@@ -487,11 +510,12 @@ def _rzp_webhook(client, event, sub_id, payment=None, sub_extra=None):
     )
 
 
-def test_razorpay_webhook_authenticated_then_charged(client, auth_headers, db):
+def test_razorpay_webhook_authenticated_then_charged(client, auth_headers, db, monkeypatch):
     """authenticated -> trialing; charged -> active + payment history recorded."""
     from app.models.billing import UserSubscription
     from app.models.payment_history import PaymentHistory
 
+    _mock_hub_create_subscription(monkeypatch)
     pro = _pro_plan(db)
     assert pro is not None
 
@@ -532,10 +556,11 @@ def test_razorpay_webhook_authenticated_then_charged(client, auth_headers, db):
     assert pay.gateway == "razorpay"
 
 
-def test_razorpay_webhook_charged_idempotent(client, auth_headers, db):
+def test_razorpay_webhook_charged_idempotent(client, auth_headers, db, monkeypatch):
     """Duplicate charged webhook (same payment id) does not double-record."""
     from app.models.payment_history import PaymentHistory
 
+    _mock_hub_create_subscription(monkeypatch)
     pro = _pro_plan(db)
     assert pro is not None
     sub_id = client.post(
@@ -555,10 +580,11 @@ def test_razorpay_webhook_charged_idempotent(client, auth_headers, db):
     assert count == 1
 
 
-def test_razorpay_webhook_halted_downgrades(client, auth_headers, db):
+def test_razorpay_webhook_halted_downgrades(client, auth_headers, db, monkeypatch):
     """halted event moves subscription to halted + downgrades to Free plan."""
     from app.models.billing import UserSubscription, BillingPlan
 
+    _mock_hub_create_subscription(monkeypatch)
     pro = _pro_plan(db)
     assert pro is not None
     sub_id = client.post(
@@ -577,8 +603,9 @@ def test_razorpay_webhook_halted_downgrades(client, auth_headers, db):
     assert sub.plan_id == free.id
 
 
-def test_subscribe_blocks_when_active(client, auth_headers, db):
+def test_subscribe_blocks_when_active(client, auth_headers, db, monkeypatch):
     """A second subscribe while trialing/active is rejected (no mandate stacking)."""
+    _mock_hub_create_subscription(monkeypatch)
     pro = _pro_plan(db)
     assert pro is not None
     sub_id = client.post(
