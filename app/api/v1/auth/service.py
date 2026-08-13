@@ -315,19 +315,24 @@ class AuthService:
         return user
 
     def send_otp(self, phone: str, db: Session) -> str:
-        otp = "".join(random.choices(string.digits, k=6))
+        # TEMPORARY — TESTING ONLY: WhatsApp send disabled, OTP fixed to
+        # 111111 for every number so other flows can be tested without
+        # waiting on WhatsApp delivery. This is a real auth bypass — revert
+        # both lines below (restore the random otp + send_whatsapp_otp call)
+        # before this is used with real users.
+        otp = "111111"
+        # otp = "".join(random.choices(string.digits, k=6))
 
         # The OTP MUST be stored so verify_otp can check it later. store_otp uses
         # Redis when available and falls back to Postgres, raising OTPServiceError
         # only if both are unreachable.
         store_otp(phone, otp, OTP_TTL_SECONDS, "login", db)
 
-        if whatsapp_configured():
-            # Let delivery errors propagate so callers can surface them.
-            send_whatsapp_otp(phone, otp)
-        else:
-            # No WhatsApp credentials (e.g. local dev): log so the flow still works.
-            logger.warning(f"[OTP-DEV] WhatsApp not configured. {phone} => {otp}")
+        # if whatsapp_configured():
+        #     # Let delivery errors propagate so callers can surface them.
+        #     send_whatsapp_otp(phone, otp)
+        # else:
+        logger.warning(f"[OTP-DEV] WhatsApp send disabled for testing. {phone} => {otp}")
         return otp
 
     def refresh_token(self, db: Session, refresh_token_str: str) -> TokenResponse:
