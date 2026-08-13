@@ -28,7 +28,11 @@ class UserSubscription(Base):
     __tablename__ = "user_subscriptions"
 
     id = Column(UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid.uuid4()))
-    user_id = Column(UUID(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    # unique=True (alembic 7f877195fa6b): one subscription row per user,
+    # enforced at the DB layer to close a race two concurrent
+    # /billing/subscribe calls could otherwise slip through — see
+    # create_razorpay_subscription's IntegrityError handling.
+    user_id = Column(UUID(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, unique=True)
     plan_id = Column(UUID(as_uuid=False), ForeignKey("billing_plans.id", ondelete="SET NULL"), nullable=True)
     stripe_subscription_id = Column(String(255), unique=True, nullable=True)
     razorpay_subscription_id = Column(String(255), unique=True, nullable=True)

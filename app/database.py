@@ -91,7 +91,69 @@ def apply_schema_patches():
         "ALTER TABLE payment_history ADD COLUMN IF NOT EXISTS gateway VARCHAR(20)",
         # Control Hub plan-cap enforcement (alembic f6a7b8c9d0e1) — same gap.
         "ALTER TABLE billing_plans ADD COLUMN IF NOT EXISTS caps JSONB",
+        # One-subscription-per-user, enforced at the DB layer (alembic
+        # 7f877195fa6b) — closes a race where two concurrent /billing/subscribe
+        # calls could both pass the app-level "already have a subscription"
+        # check before either commits. Defensively de-duplicates first (keeps
+        # the most recently created row per user) in case that race already
+        # produced duplicates before this constraint existed.
+        "DELETE FROM user_subscriptions a USING user_subscriptions b "
+        "WHERE a.user_id = b.user_id AND a.created_at < b.created_at",
+        "DO $$ BEGIN "
+        "IF NOT EXISTS (SELECT 1 FROM pg_constraint "
+        "WHERE conname = 'uq_user_subscriptions_user_id') THEN "
+        "ALTER TABLE user_subscriptions ADD CONSTRAINT "
+        "uq_user_subscriptions_user_id UNIQUE (user_id); "
+        "END IF; END $$",
     ]
     with engine.begin() as conn:
         for stmt in statements:
             conn.execute(text(stmt))
+
+
+def check_schema_drift() -> list[str]:
+    """
+    Compare every mapped model's columns against what actually exists in the
+    live DB and log/alert on any gap. Since prod's schema is hand-maintained
+    via apply_schema_patches() rather than Alembic, a forgotten entry there
+    (or a new model column) can silently 500 in prod for weeks with no alarm
+    — this is exactly what happened with billing_plans.caps/razorpay_plan_id
+    earlier this session. Non-fatal: never blocks startup.
+    """
+    import logging
+    from sqlalchemy import inspect
+
+    log = logging.getLogger(__name__)
+    insp = inspect(engine)
+    live_tables = set(insp.get_table_names())
+    drift = []
+    for table_name, table in Base.metadata.tables.items():
+        if table_name not in live_tables:
+            drift.append(f"{table_name}: table missing entirely")
+            continue
+        live_cols = {c["name"] for c in insp.get_columns(table_name)}
+        model_cols = {c.name for c in table.columns}
+        missing = model_cols - live_cols
+        if missing:
+            drift.append(f"{table_name}: missing columns {sorted(missing)}")
+
+    if drift:
+        detail = "\n".join(drift)
+        log.error(
+            "SCHEMA DRIFT DETECTED — models expect columns/tables the live "
+            "DB doesn't have (add them to apply_schema_patches()):\n%s",
+            detail,
+        )
+        try:
+            from app.utils.email import send_email
+            from app.config import settings
+            send_email(
+                to_email=settings.ADMIN_ALERT_EMAIL,
+                subject="[Rupexi] Schema drift detected on startup",
+                html_content=f"<pre>{detail}</pre>",
+                plain_text=detail,
+            )
+        except Exception as e:
+            log.error("Could not send schema-drift alert email: %s", e)
+
+    return drift

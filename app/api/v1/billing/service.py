@@ -1,5 +1,6 @@
 from sqlalchemy.orm import Session
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from datetime import datetime, timedelta
 from typing import Optional
 import uuid
@@ -156,6 +157,15 @@ class BillingService:
         except (control_hub.HubNotConfigured, control_hub.HubRequestError) as e:
             db.rollback()
             raise ValueError(str(e))
+        except IntegrityError:
+            # The DB-level unique constraint on user_id (see alembic
+            # 7f877195fa6b) caught a race the application-level "existing"
+            # check above missed — two concurrent requests both passed it
+            # before either committed. Same user-facing message as the
+            # application-level check, so the client can't tell which one
+            # fired.
+            db.rollback()
+            raise ValueError("You already have an active subscription")
         except Exception as e:
             # Any unexpected DB/runtime failure — roll back so the transaction
             # isn't left broken for a retry, and surface a real message instead

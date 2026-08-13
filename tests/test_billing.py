@@ -623,6 +623,48 @@ def test_subscribe_blocks_when_active(client, auth_headers, db, monkeypatch):
     assert resp.status_code == 400
 
 
+def test_subscribe_integrity_error_maps_to_existing_active_message(
+    client, auth_headers, db, monkeypatch
+):
+    """Deterministic test of the actual new code path: if a DB-level unique-
+    constraint violation reaches create_razorpay_subscription's commit (the
+    real-world trigger being two concurrent requests that both pass the
+    application-level 'existing' check before either commits — verified
+    separately against a real Postgres DB, since genuinely racing two
+    threads isn't reproducible through this test client's shared-session
+    fixture), it must surface as the same user-facing message as the
+    application-level check, not a raw 500/502."""
+    from sqlalchemy.exc import IntegrityError
+    from sqlalchemy.orm import Session
+
+    _mock_hub_create_subscription(monkeypatch)
+    pro = _pro_plan(db)
+    assert pro is not None
+
+    original_commit = Session.commit
+    call_count = {"n": 0}
+
+    def _commit_raise_once(self, *args, **kwargs):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise IntegrityError(
+                "INSERT INTO user_subscriptions ...", {},
+                Exception("duplicate key value violates unique constraint "
+                          '"uq_user_subscriptions_user_id"'),
+            )
+        return original_commit(self, *args, **kwargs)
+
+    monkeypatch.setattr(Session, "commit", _commit_raise_once)
+
+    resp = client.post(
+        "/api/v1/billing/subscribe",
+        json={"plan_id": str(pro.id)},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 400, resp.text
+    assert "already have an active subscription" in resp.json()["message"]
+
+
 def test_plans_sync_from_hub_single_plan(client, db, monkeypatch):
     """When the Control Hub offers a single ₹199 plan, /billing/plans returns only it."""
     from app.services import control_hub

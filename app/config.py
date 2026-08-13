@@ -43,6 +43,8 @@ class Settings(BaseSettings):
     FRONTEND_URL: str = "http://localhost:3000"
     ADMIN_URL: str = "http://localhost:5173"
     ENVIRONMENT: str = "development"
+    # Schema-drift alerts land here (see database.py::check_schema_drift).
+    ADMIN_ALERT_EMAIL: str = "superadmin@viomx.io"
     AI_SERVICE_URL: str = "http://localhost:8001"
     # Firebase Admin service-account JSON (full JSON string) — enables FCM push.
     # Get it from Firebase console → Project settings → Service accounts →

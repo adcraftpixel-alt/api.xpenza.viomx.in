@@ -121,6 +121,12 @@ def startup_event():
         logger.error(f"Startup error during table creation: {e}")
 
     try:
+        from app.database import check_schema_drift
+        check_schema_drift()
+    except Exception as e:
+        logger.error(f"Startup error during schema-drift check: {e}")
+
+    try:
         _seed_billing_plans()
     except Exception as e:
         logger.error(f"Startup error during billing plan seed: {e}")
