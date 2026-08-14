@@ -266,16 +266,25 @@ class BillingService:
         payload = body.get("payload", {})
         sub_entity = (payload.get("subscription", {}) or {}).get("entity", {}) or {}
         payment_entity = (payload.get("payment", {}) or {}).get("entity", {}) or {}
+        refund_entity = (payload.get("refund", {}) or {}).get("entity", {}) or {}
 
         if event == "subscription.authenticated":
             # Mandate registered; free trial running.
             self._rzp_set_status(sub_entity, "trialing", db)
             sub = self._rzp_find(sub_entity, db)
             if sub:
-                self._rzp_record_trial_verification(sub, payment_entity, db)
+                verification_amount = self._rzp_record_trial_verification(
+                    sub, payment_entity, db
+                )
+                # Real Razorpay payment id when available, so a later refund
+                # webhook (matched on this same id) can update this same Hub
+                # Transaction instead of being an orphaned report.
+                verification_payment_id = (
+                    payment_entity.get("id") or f"trial_{sub.razorpay_subscription_id}"
+                )
                 self._report_purchase_to_hub(
-                    db, sub, amount=0,
-                    payment_id=f"trial_{sub.razorpay_subscription_id}",
+                    db, sub, amount=verification_amount,
+                    payment_id=verification_payment_id,
                     status="trial", is_trial=True,
                 )
                 self._notify_trial_started(sub, db)
@@ -292,6 +301,34 @@ class BillingService:
             self._rzp_downgrade(sub_entity, "halted", db)
         elif event in ("subscription.cancelled", "subscription.completed"):
             self._rzp_downgrade(sub_entity, "canceled", db)
+        elif event in ("refund.processed", "payment.refunded"):
+            # Razorpay auto-refunds the trial mandate-verification charge —
+            # reflect that in Billing History instead of leaving it looking
+            # like an unexplained pending charge forever.
+            self._rzp_handle_refund(payment_entity, refund_entity, db)
+
+    def _rzp_handle_refund(self, payment_entity: dict, refund_entity: dict, db: Session):
+        pay_id = payment_entity.get("id") or refund_entity.get("payment_id")
+        if not pay_id:
+            return
+        row = db.query(PaymentHistory).filter(
+            PaymentHistory.razorpay_payment_id == pay_id
+        ).first()
+        if not row:
+            return
+        row.status = "refunded"
+        db.commit()
+
+        sub = db.query(UserSubscription).filter(
+            UserSubscription.id == row.subscription_id
+        ).first()
+        if sub:
+            # Same payment_id as the original trial report — the Hub updates
+            # that Transaction's status instead of recording a new one.
+            self._report_purchase_to_hub(
+                db, sub, amount=float(row.amount or 0),
+                payment_id=pay_id, status="refunded", is_trial=True,
+            )
 
     def _rzp_find(self, sub_entity: dict, db: Session) -> Optional[UserSubscription]:
         sub_id = sub_entity.get("id")
@@ -318,19 +355,21 @@ class BillingService:
 
     def _rzp_record_trial_verification(
         self, sub: UserSubscription, payment_entity: dict, db: Session
-    ):
+    ) -> float:
         """Record the small mandate-verification charge Razorpay takes when the
         trial starts, so it shows up in Billing History even though it isn't a
-        real (non-refundable) payment — mirrors _rzp_handle_charged's shape."""
+        real (non-refundable) payment — mirrors _rzp_handle_charged's shape.
+        Returns the charge amount (for reporting the same figure to the Hub)."""
         pay_id = payment_entity.get("id")
+        amt = (payment_entity.get("amount", 0) / 100) if payment_entity.get("amount") else 0
+
         if pay_id:
             dup = db.query(PaymentHistory).filter(
                 PaymentHistory.razorpay_payment_id == pay_id
             ).first()
             if dup:
-                return
+                return float(dup.amount or 0)
 
-        amt = (payment_entity.get("amount", 0) / 100) if payment_entity.get("amount") else 0
         db.add(PaymentHistory(
             id=str(uuid.uuid4()),
             user_id=sub.user_id,
@@ -344,6 +383,7 @@ class BillingService:
             paid_at=datetime.utcnow(),
         ))
         db.commit()
+        return amt
 
     def _rzp_handle_charged(self, sub_entity: dict, payment_entity: dict, db: Session):
         sub = self._rzp_find(sub_entity, db)
