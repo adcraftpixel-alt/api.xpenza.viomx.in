@@ -102,10 +102,13 @@ class BillingService:
         Creates a Razorpay Subscription via the Control Hub — Rupexi holds no
         Razorpay credentials itself; the Hub creates the Subscription with its
         centrally-stored secret and returns only the publishable key_id needed
-        by the mobile Razorpay Checkout. The first debit is `TRIAL_DAYS` in the
-        future (the free trial); the ₹1 validation charge during mandate setup
-        is done + auto-refunded by Razorpay. We persist a local subscription row
-        in 'created' state; webhooks (relayed from the Hub) move it to
+        by the mobile Razorpay Checkout. The first debit is scheduled for
+        `TRIAL_DAYS` after registration (user.created_at), not TRIAL_DAYS from
+        now — activating late shortens the trial rather than granting a fresh
+        one, and activating after the full window has passed skips the trial
+        entirely. The ₹1 validation charge during mandate setup is done +
+        auto-refunded by Razorpay. We persist a local subscription row in
+        'created' state; webhooks (relayed from the Hub) move it to
         trialing/active.
         """
         from app.services import control_hub
@@ -122,8 +125,22 @@ class BillingService:
             if existing and existing.status in ("trialing", "active", "past_due"):
                 raise ValueError("You already have an active subscription")
 
-            trial_days = settings.TRIAL_DAYS
-            trial_end = datetime.utcnow() + timedelta(days=trial_days)
+            # The free trial and the pre-activation grace period share one
+            # clock anchored to registration (user.created_at), not to the
+            # moment of activation — activating late shortens the trial
+            # instead of granting a fresh TRIAL_DAYS from "now". A user who
+            # waits past the full TRIAL_DAYS window gets no trial at all and
+            # is billed right away (Razorpay still requires `start_at` to be
+            # a future timestamp, so we nudge it a few minutes ahead rather
+            # than passing "now" literally).
+            now = datetime.utcnow()
+            registered_at = user.created_at or now
+            days_elapsed = (now - registered_at).days
+            trial_days = max(0, settings.TRIAL_DAYS - days_elapsed)
+            if trial_days > 0:
+                trial_end = now + timedelta(days=trial_days)
+            else:
+                trial_end = now + timedelta(minutes=5)
             start_at = int(trial_end.timestamp())
 
             result = control_hub.create_subscription(

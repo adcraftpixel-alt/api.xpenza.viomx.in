@@ -14,6 +14,7 @@ from app.api.v1.users.schemas import (
 from app.api.v1.users.service import UserService
 from app.api.v1.users.preferences_service import PreferencesService
 from app.utils.response import success
+from app.config import settings
 
 router = APIRouter(tags=["Users"])
 service = UserService()
@@ -55,13 +56,14 @@ def complete_onboarding(
 @router.get("/onboarding/status", response_model=None)
 def onboarding_status(current_user=Depends(get_current_active_user)):
     registered_at = current_user.created_at or datetime.utcnow()
-    grace_period_expired = (
-        datetime.utcnow() - registered_at >= timedelta(days=GRACE_PERIOD_DAYS)
-    )
+    days_elapsed = (datetime.utcnow() - registered_at).days
+    grace_period_expired = days_elapsed >= GRACE_PERIOD_DAYS
+    trial_days_remaining = max(0, settings.TRIAL_DAYS - days_elapsed)
     payload = OnboardingStatusResponse(
         onboarding_done=current_user.onboarding_done,
         user_exists=True,
         grace_period_expired=grace_period_expired,
+        trial_days_remaining=trial_days_remaining,
     )
     return success(payload.model_dump())
 

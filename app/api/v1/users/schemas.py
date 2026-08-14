@@ -91,3 +91,8 @@ class OnboardingStatusResponse(BaseModel):
     # active/trialing paid subscription — the app must then block "Skip" on
     # the trial screen and require activation.
     grace_period_expired: bool = False
+    # TRIAL_DAYS minus days already elapsed since registration, floored at 0.
+    # The grace period and the paid trial share one clock anchored to
+    # created_at, so activating late shortens the trial instead of granting
+    # a fresh TRIAL_DAYS from the moment of activation.
+    trial_days_remaining: int = 0
