@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta
+
 from fastapi import APIRouter, Depends, UploadFile, File, Request
 from sqlalchemy.orm import Session
 from app.database import get_db
@@ -16,6 +18,10 @@ from app.utils.response import success
 router = APIRouter(tags=["Users"])
 service = UserService()
 prefs_service = PreferencesService()
+
+# Free users get this many days from registration before the trial screen's
+# "Skip" is removed and activation becomes mandatory.
+GRACE_PERIOD_DAYS = 7
 
 
 @router.get("/me")
@@ -48,9 +54,14 @@ def complete_onboarding(
 
 @router.get("/onboarding/status", response_model=None)
 def onboarding_status(current_user=Depends(get_current_active_user)):
+    registered_at = current_user.created_at or datetime.utcnow()
+    grace_period_expired = (
+        datetime.utcnow() - registered_at >= timedelta(days=GRACE_PERIOD_DAYS)
+    )
     payload = OnboardingStatusResponse(
         onboarding_done=current_user.onboarding_done,
         user_exists=True,
+        grace_period_expired=grace_period_expired,
     )
     return success(payload.model_dump())
 

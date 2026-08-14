@@ -87,3 +87,7 @@ class PreferencesResponse(BaseModel):
 class OnboardingStatusResponse(BaseModel):
     onboarding_done: bool
     user_exists: bool
+    # True once GRACE_PERIOD_DAYS have passed since registration with no
+    # active/trialing paid subscription — the app must then block "Skip" on
+    # the trial screen and require activation.
+    grace_period_expired: bool = False
