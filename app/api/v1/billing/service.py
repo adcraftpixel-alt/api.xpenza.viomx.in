@@ -62,7 +62,7 @@ class BillingService:
                 "stripe_price_id_monthly": p.stripe_price_id_monthly,
                 "stripe_price_id_yearly": p.stripe_price_id_yearly,
                 "razorpay_plan_id": p.razorpay_plan_id,
-                "features": p.features or {},
+                "features": p.features or [],
                 "is_active": p.is_active,
             }
             for p in plans
