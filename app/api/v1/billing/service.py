@@ -409,7 +409,7 @@ class BillingService:
             return {
                 "plan": "Free",
                 "status": "active",
-                "features": free_plan.features if free_plan else {},
+                "features": (free_plan.features if free_plan else None) or [],
                 "cancel_at_period_end": False,
             }
 
@@ -421,7 +421,7 @@ class BillingService:
             "is_trialing": sub.status == "trialing",
             "trial_end": sub.trial_end.isoformat() if sub.trial_end else None,
             "price_monthly": float(sub.price_monthly) if sub.price_monthly else 0,
-            "features": sub.features or {},
+            "features": sub.features or [],
             "current_period_start": sub.current_period_start.isoformat() if sub.current_period_start else None,
             "current_period_end": sub.current_period_end.isoformat() if sub.current_period_end else None,
             "cancel_at_period_end": sub.cancel_at_period_end,
