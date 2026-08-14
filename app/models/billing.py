@@ -43,6 +43,13 @@ class UserSubscription(Base):
     current_period_start = Column(DateTime, nullable=True)
     current_period_end = Column(DateTime, nullable=True)
     cancel_at_period_end = Column(Boolean, default=False, nullable=False)
+    # Set once report_purchase() to the Control Hub actually succeeds for
+    # this row (best-effort call can silently fail — see
+    # BillingService._report_purchase_to_hub). Null means the local
+    # subscription exists but the Hub may not know about it yet; callers
+    # use this to retry registration instead of assuming a single attempt
+    # at webhook time was enough.
+    hub_synced_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     user = relationship("User", back_populates="user_subscriptions")

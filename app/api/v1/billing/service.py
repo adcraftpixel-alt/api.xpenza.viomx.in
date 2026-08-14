@@ -1,3 +1,5 @@
+import logging
+
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
@@ -11,6 +13,8 @@ from app.models.billing import BillingPlan, UserSubscription
 from app.models.payment_history import PaymentHistory
 from app.models.user import User
 from app.utils.response import success
+
+logger = logging.getLogger(__name__)
 
 
 class BillingService:
@@ -205,7 +209,12 @@ class BillingService:
         self, db: Session, sub: UserSubscription, amount: float,
         payment_id: str, status: str, is_trial: bool,
     ):
-        """Report a buyer + purchase to the Control Hub (best-effort)."""
+        """Report a buyer + purchase to the Control Hub (best-effort — never
+        lets a Hub hiccup break billing). On success, stamps
+        sub.hub_synced_at so callers (e.g. get_current_subscription) know
+        this tenant doesn't need a retry; on failure it's logged instead of
+        silently dropped, and hub_synced_at stays null so the next check-in
+        retries automatically."""
         from app.services import control_hub
 
         if not control_hub.is_configured():
@@ -215,7 +224,10 @@ class BillingService:
             plan = db.query(BillingPlan).filter(BillingPlan.id == sub.plan_id).first()
             if not user:
                 return
-            control_hub.report_purchase({
+            # report_purchase() is itself best-effort — it swallows its own
+            # HTTP/network errors and returns False rather than raising, so
+            # the success/failure signal is the return value, not exceptions.
+            ok = control_hub.report_purchase({
                 "external_user_id": str(user.id),
                 "email": user.email,
                 "name": user.name,
@@ -229,8 +241,22 @@ class BillingService:
                 "is_trial": is_trial,
                 "period_end": sub.current_period_end.isoformat() if sub.current_period_end else None,
             })
+            if ok:
+                sub.hub_synced_at = datetime.utcnow()
+                db.commit()
+            else:
+                logger.warning(
+                    "Control Hub purchase report returned failure for subscription "
+                    "%s (user %s) — will retry on next subscription check-in",
+                    sub.id, sub.user_id,
+                )
         except Exception:
-            pass  # never let reporting break billing
+            logger.exception(
+                "Control Hub purchase report failed for subscription %s (user %s) — "
+                "will retry on next subscription check-in",
+                sub.id, sub.user_id,
+            )
+            db.rollback()
 
     def _notify_trial_started(self, sub: UserSubscription, db: Session):
         """In-app + push notification telling the user their free month has
@@ -476,11 +502,30 @@ class BillingService:
             db.add(sub)
         db.commit()
 
+    def _retry_hub_sync(self, subscription_id: str, db: Session):
+        """Re-attempt the Control Hub purchase report for a subscription
+        whose original webhook-time attempt never got confirmed
+        (hub_synced_at still null). There's no original payment_id to reuse
+        here, so a resync-specific one is used — report_purchase() upserts
+        on the Hub side, so this is safe to call repeatedly."""
+        sub = db.query(UserSubscription).filter(UserSubscription.id == subscription_id).first()
+        if not sub or sub.hub_synced_at:
+            return
+        plan = db.query(BillingPlan).filter(BillingPlan.id == sub.plan_id).first()
+        self._report_purchase_to_hub(
+            db, sub,
+            amount=float(plan.price_monthly) if plan and plan.price_monthly else 0.0,
+            payment_id=f"resync_{sub.razorpay_subscription_id or sub.id}",
+            status="trial" if sub.status == "trialing" else "success",
+            is_trial=sub.status == "trialing",
+        )
+
     def get_current_subscription(self, user_id: str, db: Session) -> Optional[dict]:
         sub = db.execute(text("""
             SELECT us.id, us.status, us.current_period_start, us.current_period_end,
                    us.cancel_at_period_end, us.stripe_subscription_id,
                    us.razorpay_subscription_id, us.gateway, us.trial_end,
+                   us.hub_synced_at,
                    bp.name as plan_name, bp.price_monthly, bp.features
             FROM user_subscriptions us
             JOIN billing_plans bp ON bp.id = us.plan_id
@@ -499,6 +544,14 @@ class BillingService:
                 "features": (free_plan.features if free_plan else None) or [],
                 "cancel_at_period_end": False,
             }
+
+        # Self-heal: the webhook-time report to the Control Hub is
+        # best-effort and can fail silently (see _report_purchase_to_hub).
+        # Every fetch of a trialing/active subscription that never got
+        # confirmed as synced retries it here — cheap since it's a no-op
+        # once hub_synced_at is set.
+        if sub.status in ("trialing", "active") and not sub.hub_synced_at:
+            self._retry_hub_sync(sub.id, db)
 
         return {
             "id": str(sub.id),
