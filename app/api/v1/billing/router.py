@@ -85,6 +85,9 @@ def cancel_subscription(
         result = billing_service.cancel_subscription(str(current_user.id), db)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except RuntimeError as e:
+        logger.exception("DELETE /billing/subscription failed")
+        raise HTTPException(status_code=502, detail=f"Could not cancel subscription: {e}")
     return success(result)
 
 

@@ -441,16 +441,29 @@ class BillingService:
         if sub.gateway == "razorpay" and sub.razorpay_subscription_id:
             # Cancels the mandate via the Control Hub; works during the trial
             # (before any auto-debit) since Rupexi holds no Razorpay credentials.
+            # Razorpay only accepts cancel_at_cycle_end=1 once a billing cycle is
+            # actually in progress (status "active"); during "trialing" (mandate
+            # authenticated but never charged) there is no cycle to defer to, so
+            # it must be cancelled immediately or Razorpay returns 400.
+            at_cycle_end = sub.status == "active"
             try:
-                control_hub.cancel_subscription(sub.razorpay_subscription_id, at_cycle_end=True)
+                control_hub.cancel_subscription(sub.razorpay_subscription_id, at_cycle_end=at_cycle_end)
             except (control_hub.HubNotConfigured, control_hub.HubRequestError) as e:
-                raise ValueError(str(e))
+                # Not a 404 (no subscription) — a downstream gateway failure.
+                raise RuntimeError(str(e))
         elif sub.stripe_subscription_id:
             stripe_service.cancel_subscription(sub.stripe_subscription_id)
+            at_cycle_end = True
+        else:
+            at_cycle_end = True
 
-        sub.cancel_at_period_end = True
+        sub.cancel_at_period_end = at_cycle_end
+        if not at_cycle_end:
+            sub.status = "canceled"
         db.commit()
-        return {"message": "Subscription will cancel at period end", "cancel_at_period_end": True}
+        if at_cycle_end:
+            return {"message": "Subscription will cancel at period end", "cancel_at_period_end": True}
+        return {"message": "Subscription cancelled", "cancel_at_period_end": False}
 
     def handle_webhook(self, event_type: str, event_data: dict, db: Session):
         """Process Stripe webhook events"""
