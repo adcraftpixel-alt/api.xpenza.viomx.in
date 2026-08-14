@@ -272,6 +272,7 @@ class BillingService:
             self._rzp_set_status(sub_entity, "trialing", db)
             sub = self._rzp_find(sub_entity, db)
             if sub:
+                self._rzp_record_trial_verification(sub, payment_entity, db)
                 self._report_purchase_to_hub(
                     db, sub, amount=0,
                     payment_id=f"trial_{sub.razorpay_subscription_id}",
@@ -313,6 +314,35 @@ class BillingService:
             return
         sub.status = status
         self._rzp_apply_period(sub, sub_entity)
+        db.commit()
+
+    def _rzp_record_trial_verification(
+        self, sub: UserSubscription, payment_entity: dict, db: Session
+    ):
+        """Record the small mandate-verification charge Razorpay takes when the
+        trial starts, so it shows up in Billing History even though it isn't a
+        real (non-refundable) payment — mirrors _rzp_handle_charged's shape."""
+        pay_id = payment_entity.get("id")
+        if pay_id:
+            dup = db.query(PaymentHistory).filter(
+                PaymentHistory.razorpay_payment_id == pay_id
+            ).first()
+            if dup:
+                return
+
+        amt = (payment_entity.get("amount", 0) / 100) if payment_entity.get("amount") else 0
+        db.add(PaymentHistory(
+            id=str(uuid.uuid4()),
+            user_id=sub.user_id,
+            subscription_id=sub.id,
+            razorpay_payment_id=pay_id,
+            razorpay_invoice_id=sub.razorpay_subscription_id,
+            gateway="razorpay",
+            amount=amt,
+            currency=(payment_entity.get("currency") or "INR").upper(),
+            status="trial_verification",
+            paid_at=datetime.utcnow(),
+        ))
         db.commit()
 
     def _rzp_handle_charged(self, sub_entity: dict, payment_entity: dict, db: Session):
