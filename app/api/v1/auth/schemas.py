@@ -13,6 +13,10 @@ class LoginRequest(BaseModel):
     email_or_phone: Optional[str] = None
     email: Optional[str] = None   # legacy field, maps to email_or_phone
     password: str
+    # Only checked once an IP has racked up repeated failed logins, and only
+    # if CAPTCHA_PROVIDER is configured (see app/core/rate_limit.py) — safe
+    # to leave unset otherwise.
+    captcha_token: Optional[str] = None
 
     def get_identifier(self) -> str:
         return self.email_or_phone or self.email or ""

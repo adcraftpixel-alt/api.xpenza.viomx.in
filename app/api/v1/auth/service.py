@@ -43,6 +43,16 @@ logger = logging.getLogger(__name__)
 
 OTP_TTL_SECONDS = 300  # 5 minutes
 
+# OTP send abuse protection: SMS/WhatsApp delivery costs money per send, so
+# this is throttled independently from OTP *verify* attempts below.
+OTP_SEND_COOLDOWN_SECONDS = 60
+OTP_SEND_MAX_PER_WINDOW = 5
+OTP_SEND_WINDOW_SECONDS = 60 * 60
+
+# Max wrong guesses against one issued OTP before it's invalidated, forcing a
+# resend (which is itself rate-limited above).
+OTP_MAX_VERIFY_ATTEMPTS = 5
+
 
 class OTPServiceError(Exception):
     """Raised when the OTP store (Redis) is unavailable so the request can fail
@@ -59,6 +69,40 @@ def _redis_key(identifier: str, purpose: str) -> str:
     return f"{prefix}:{identifier}"
 
 
+def _attempts_key(identifier: str, purpose: str) -> str:
+    return f"otp_attempts:{purpose}:{identifier}"
+
+
+def _check_otp_send_allowed(identifier: str, purpose: str) -> None:
+    """Raise 429 if `identifier` is sending OTPs (of this purpose) too fast.
+    Fails open if Redis is unavailable — matches store_otp/consume_otp."""
+    if redis_client is None:
+        return
+    cooldown_key = f"otp_send_cooldown:{purpose}:{identifier}"
+    count_key = f"otp_send_count:{purpose}:{identifier}"
+    try:
+        if redis_client.exists(cooldown_key):
+            ttl = redis_client.ttl(cooldown_key)
+            raise AppException(
+                status_code=429,
+                detail=f"Please wait {max(ttl, 1)}s before requesting another code.",
+            )
+        pipe = redis_client.pipeline()
+        pipe.incr(count_key)
+        pipe.expire(count_key, OTP_SEND_WINDOW_SECONDS, nx=True)
+        count, _ = pipe.execute()
+        if int(count) > OTP_SEND_MAX_PER_WINDOW:
+            raise AppException(
+                status_code=429,
+                detail="Too many code requests. Please try again later.",
+            )
+        redis_client.setex(cooldown_key, OTP_SEND_COOLDOWN_SECONDS, "1")
+    except AppException:
+        raise
+    except Exception as e:
+        logger.warning(f"OTP send rate-limit check failed for {identifier}, failing open: {e}")
+
+
 def store_otp(identifier: str, code: str, ttl: int, purpose: str, db: Session) -> None:
     """Persist an OTP for later verification.
 
@@ -69,6 +113,8 @@ def store_otp(identifier: str, code: str, ttl: int, purpose: str, db: Session) -
     if redis_client is not None:
         try:
             redis_client.setex(_redis_key(identifier, purpose), ttl, code)
+            # A freshly issued code gets a clean slate of verify attempts.
+            redis_client.delete(_attempts_key(identifier, purpose))
             return
         except Exception as e:
             logger.warning(f"Redis OTP store failed, falling back to Postgres: {e}")
@@ -85,6 +131,11 @@ def store_otp(identifier: str, code: str, ttl: int, purpose: str, db: Session) -
             expires_at=datetime.utcnow() + timedelta(seconds=ttl),
         ))
         db.commit()
+        if redis_client is not None:
+            try:
+                redis_client.delete(_attempts_key(identifier, purpose))
+            except Exception:
+                pass
     except Exception as e:
         db.rollback()
         logger.error(f"OTP storage failed (Redis + Postgres both unavailable): {e}")
@@ -95,6 +146,29 @@ def store_otp(identifier: str, code: str, ttl: int, purpose: str, db: Session) -
 
 def consume_otp(identifier: str, code: str, purpose: str, db: Session) -> bool:
     """Validate a submitted OTP and invalidate it. True if it matched and was unexpired."""
+    # Cap wrong guesses against the currently-issued code — once exceeded,
+    # invalidate it outright (forcing a resend) rather than let a script grind
+    # through the whole keyspace of a 6-digit code.
+    if redis_client is not None:
+        try:
+            attempts_key = _attempts_key(identifier, purpose)
+            attempts = redis_client.incr(attempts_key)
+            redis_client.expire(attempts_key, OTP_TTL_SECONDS, nx=True)
+            if attempts > OTP_MAX_VERIFY_ATTEMPTS:
+                redis_client.delete(_redis_key(identifier, purpose))
+                redis_client.delete(attempts_key)
+                try:
+                    from app.models.otp_code import OtpCode
+                    db.query(OtpCode).filter(
+                        OtpCode.identifier == identifier, OtpCode.purpose == purpose
+                    ).delete()
+                    db.commit()
+                except Exception:
+                    db.rollback()
+                return False
+        except Exception as e:
+            logger.warning(f"OTP attempt-cap check failed for {identifier}, failing open: {e}")
+
     # Try Redis first.
     if redis_client is not None:
         try:
@@ -257,6 +331,8 @@ class AuthService:
 
     def login(self, db: Session, data: LoginRequest) -> TokenResponse:
         identifier = data.get_identifier()
+        from app.core.rate_limit import check_lock
+        check_lock(f"login:{identifier}")
         user = (
             db.query(User).filter(User.email == identifier).first()
             or db.query(User).filter(User.phone == identifier).first()
@@ -315,30 +391,42 @@ class AuthService:
         return user
 
     def send_otp(self, phone: str, db: Session) -> str:
-        # TEMPORARY — TESTING ONLY: WhatsApp send disabled, OTP fixed to
-        # 111111 for every number so other flows can be tested without
-        # waiting on WhatsApp delivery. This is a real auth bypass — revert
-        # both lines below (restore the random otp + send_whatsapp_otp call)
-        # before this is used with real users.
-        otp = "111111"
-        # otp = "".join(random.choices(string.digits, k=6))
+        _check_otp_send_allowed(phone, "login")
+
+        # App Store / Play Store reviewer bypass (settings.REVIEWER_BYPASS_PHONE)
+        # — one reserved number gets a fixed code and no real WhatsApp send, so
+        # reviewers can sign in without receiving a live message. Every other
+        # number is unaffected.
+        is_reviewer_bypass = bool(settings.REVIEWER_BYPASS_PHONE) and normalize_phone(
+            phone
+        ) == normalize_phone(settings.REVIEWER_BYPASS_PHONE)
+        otp = (
+            settings.REVIEWER_BYPASS_OTP
+            if is_reviewer_bypass
+            else "".join(random.choices(string.digits, k=6))
+        )
 
         # The OTP MUST be stored so verify_otp can check it later. store_otp uses
         # Redis when available and falls back to Postgres, raising OTPServiceError
         # only if both are unreachable.
         store_otp(phone, otp, OTP_TTL_SECONDS, "login", db)
 
-        # if whatsapp_configured():
-        #     # Let delivery errors propagate so callers can surface them.
-        #     send_whatsapp_otp(phone, otp)
-        # else:
-        logger.warning(f"[OTP-DEV] WhatsApp send disabled for testing. {phone} => {otp}")
+        if is_reviewer_bypass:
+            logger.info(f"[REVIEWER-BYPASS] Skipping WhatsApp send for {phone}")
+        elif whatsapp_configured():
+            # Let delivery errors propagate so callers can surface them.
+            send_whatsapp_otp(phone, otp)
+        else:
+            logger.warning(f"[OTP-DEV] WhatsApp not configured. {phone} => {otp}")
         return otp
 
     def refresh_token(self, db: Session, refresh_token_str: str) -> TokenResponse:
         payload = decode_token(refresh_token_str)
         if payload.get("type") != "refresh":
             raise UnauthorizedError("Invalid token type")
+        from app.core.token_blacklist import is_blacklisted
+        if is_blacklisted(payload.get("jti")):
+            raise UnauthorizedError("Token has been revoked")
         user_id = payload.get("sub")
         user = db.query(User).filter(User.id == user_id).first()
         if not user or not user.is_active:
@@ -364,6 +452,7 @@ class AuthService:
 
     def _send_otp_via_contact(self, identifier: str, db: Session) -> str:
         """Generate a 6-digit OTP, persist it for 1 hour, and dispatch it."""
+        _check_otp_send_allowed(identifier, "pwd_reset")
         otp = "".join(random.choices(string.digits, k=6))
         store_otp(identifier, otp, 3600, "pwd_reset", db)  # 1-hour expiry
         if "@" in identifier:
@@ -386,9 +475,16 @@ class AuthService:
     def forgot_password(self, db: Session, email_or_phone: str) -> str:
         """Send a password-reset OTP. Returns the masked contact string."""
         user = self._find_user_by_email_or_phone(db, email_or_phone)
-        # Always respond the same way to avoid user-enumeration
+        # Always respond the same way to avoid user-enumeration — including
+        # when the send is rate-limited, so a 429 here can't be used as an
+        # existence oracle the way it could on /send-otp.
         if user:
-            self._send_otp_via_contact(email_or_phone.strip(), db)
+            try:
+                self._send_otp_via_contact(email_or_phone.strip(), db)
+            except AppException as e:
+                if e.status_code != 429:
+                    raise
+                logger.info(f"Password-reset OTP rate-limited for {self._mask_contact(email_or_phone.strip())}")
         return self._mask_contact(email_or_phone.strip())
 
     def reset_password(self, db: Session, email_or_phone: str, otp: str, new_password: str) -> bool:

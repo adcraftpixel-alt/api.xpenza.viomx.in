@@ -43,6 +43,18 @@ class Settings(BaseSettings):
     FRONTEND_URL: str = "http://localhost:3000"
     ADMIN_URL: str = "http://localhost:5173"
     ENVIRONMENT: str = "development"
+    # CAPTCHA on repeated failed logins — disabled (no-op) until CAPTCHA_PROVIDER
+    # is set. Set to "turnstile" (Cloudflare) or "hcaptcha" once you have a
+    # site/secret key pair; the frontend also needs the matching widget.
+    CAPTCHA_PROVIDER: str = ""
+    CAPTCHA_SECRET_KEY: str = ""
+    CAPTCHA_FAIL_THRESHOLD: int = 8
+    # App Store / Play Store reviewer bypass — this single number skips the
+    # real WhatsApp send and always uses REVIEWER_BYPASS_OTP, so reviewers can
+    # log in without receiving a live message. Empty phone = disabled. Every
+    # other number is unaffected (real random OTP, real WhatsApp send).
+    REVIEWER_BYPASS_PHONE: str = ""
+    REVIEWER_BYPASS_OTP: str = "111111"
     # Schema-drift alerts land here (see database.py::check_schema_drift).
     ADMIN_ALERT_EMAIL: str = "superadmin@viomx.io"
     AI_SERVICE_URL: str = "http://localhost:8001"
