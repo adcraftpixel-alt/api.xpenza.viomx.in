@@ -87,6 +87,7 @@ class HubRequestError(Exception):
 def create_subscription(
     plan_name: str,
     start_at: int,
+    external_user_id: str,
     notify_email: str | None = None,
     notify_phone: str | None = None,
 ) -> dict:
@@ -96,6 +97,10 @@ def create_subscription(
     key_id, short_url, status). Unlike fetch_plans/report_purchase this is
     NOT best-effort: without a subscription there is nothing to authorise on
     the mobile side, so callers must handle the raised exceptions.
+
+    [external_user_id] lets the Hub attribute this Subscription to the right
+    Tenant the moment it's created, rather than only finding out via a later
+    report_purchase() call (which depends on a webhook actually arriving).
     """
     if not is_configured():
         raise HubNotConfigured("CONTROL_HUB_URL/CONTROL_HUB_KEY are not configured")
@@ -103,6 +108,7 @@ def create_subscription(
     body = {
         "plan_name": plan_name,
         "start_at": start_at,
+        "external_user_id": external_user_id,
         "notify_email": notify_email,
         "notify_phone": notify_phone,
     }

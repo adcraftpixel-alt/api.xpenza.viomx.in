@@ -434,7 +434,7 @@ def _mock_hub_create_subscription(monkeypatch):
     import uuid as _uuid
     from app.services import control_hub
 
-    def _fake(plan_name, start_at, notify_email=None, notify_phone=None):
+    def _fake(plan_name, start_at, external_user_id, notify_email=None, notify_phone=None):
         return {
             "subscription_id": f"sub_mock_{_uuid.uuid4().hex[:8]}",
             "key_id": "rzp_test_mock",

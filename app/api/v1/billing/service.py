@@ -150,6 +150,7 @@ class BillingService:
             result = control_hub.create_subscription(
                 plan_name=plan.name,
                 start_at=start_at,
+                external_user_id=str(user.id),
                 notify_email=user.email,
                 notify_phone=user.phone,
             )
