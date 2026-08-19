@@ -129,6 +129,27 @@ class BillingService:
             if existing and existing.status in ("trialing", "active", "past_due"):
                 raise ValueError("You already have an active subscription")
 
+            # A previous attempt (mandate never authenticated — e.g. the user
+            # backed out or the bank declined it) left `existing` pointing at
+            # a Razorpay subscription we're about to abandon in favour of a
+            # new one. Cancel it first so it doesn't keep running on
+            # Razorpay's side with its own live ₹-per-month mandate — without
+            # this, a user who retries ends up with two simultaneously Active
+            # subscriptions and gets billed twice. Best-effort: Control Hub
+            # not having a record of it (already cancelled/expired, or never
+            # synced) must not block the retry itself.
+            if existing and existing.razorpay_subscription_id:
+                try:
+                    control_hub.cancel_subscription(
+                        existing.razorpay_subscription_id, at_cycle_end=False
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Could not cancel stale subscription %s before retry "
+                        "for user %s: %s",
+                        existing.razorpay_subscription_id, user.id, e,
+                    )
+
             # The free trial and the pre-activation grace period share one
             # clock anchored to registration (user.created_at), not to the
             # moment of activation — activating late shortens the trial
