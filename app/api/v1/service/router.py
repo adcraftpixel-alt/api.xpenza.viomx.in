@@ -1,4 +1,5 @@
-"""VIOMX Control Hub service API — protected by X-Service-Key."""
+"""VIOMX Control Hub service API — protected by an HMAC-signed request
+(X-Timestamp/X-Nonce/X-Signature, see app/core/signing.py)."""
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query
@@ -66,11 +67,10 @@ def unblock_user(user_id: str, db: Session = Depends(get_db)):
 def subscription_webhook_relay(body: dict[str, Any], db: Session = Depends(get_db)):
     """The Control Hub relays a Razorpay subscription webhook here after
     verifying its signature itself — Rupexi holds no Razorpay credentials, so
-    it can't verify the signature on its own. Trust here comes from
-    X-Service-Key (router-level dependency) instead of Razorpay's HMAC.
-    Reuses the exact same state machine as the (now dormant) direct
-    POST /billing/razorpay/webhook path: [body] is the raw, unmodified
-    Razorpay payload, same shape either way."""
+    it can't verify the signature on its own. Trust here comes from the
+    HMAC-signed request (router-level dependency, see app/core/signing.py)
+    instead of Razorpay's own HMAC. [body] is the raw, unmodified Razorpay
+    payload."""
     billing_service.handle_razorpay_webhook(body.get("event", ""), body, db)
     return success(None)
 

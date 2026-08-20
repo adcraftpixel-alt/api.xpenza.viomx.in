@@ -10,6 +10,7 @@ celery_app = Celery(
         "app.workers.notification_tasks",
         "app.workers.ai_tasks",
         "app.workers.report_tasks",
+        "app.workers.billing_tasks",
     ]
 )
 
@@ -55,5 +56,11 @@ celery_app.conf.beat_schedule = {
     "recalculate-health-scores": {
         "task": "app.workers.ai_tasks.recalculate_all_health_scores",
         "schedule": crontab(hour=3, minute=0, day_of_week=0),
+    },
+    # Retry Control Hub purchase reports that never got confirmed synced —
+    # every 30 minutes, independent of the affected user opening the app.
+    "sync-unsynced-hub-subscriptions": {
+        "task": "app.workers.billing_tasks.sync_unsynced_hub_subscriptions",
+        "schedule": crontab(minute="*/30"),
     },
 }

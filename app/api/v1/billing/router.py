@@ -127,27 +127,7 @@ async def stripe_webhook(
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.post("/razorpay/webhook")
-async def razorpay_webhook(
-    request: Request,
-    x_razorpay_signature: Optional[str] = Header(None, alias="x-razorpay-signature"),
-    db: Session = Depends(get_db),
-):
-    """Razorpay subscription lifecycle webhook (authenticated/activated/charged/…)."""
-    import json
-    from app.api.v1.billing.razorpay_service import razorpay_service
-
-    payload = await request.body()
-
-    # Verify signature (no-op in dev/test when webhook secret is unset).
-    if not razorpay_service.verify_webhook_signature(payload, x_razorpay_signature or ""):
-        from fastapi import HTTPException
-        raise HTTPException(status_code=400, detail="Invalid webhook signature")
-
-    try:
-        body = json.loads(payload)
-    except Exception:
-        return {"received": True}
-
-    billing_service.handle_razorpay_webhook(body.get("event", ""), body, db)
-    return {"received": True}
+# Razorpay webhooks arrive at the Control Hub (it holds the signing secret)
+# and are relayed here as POST /api/v1/service/subscriptions/webhook-relay,
+# authenticated by an HMAC-signed request. Rupexi never receives a raw
+# Razorpay webhook directly — see app/api/v1/service/router.py.

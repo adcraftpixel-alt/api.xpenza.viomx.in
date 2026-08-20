@@ -1,16 +1,20 @@
-"""Tests for the Control Hub service API (/api/v1/service/*, X-Service-Key)."""
+"""Tests for the Control Hub service API (/api/v1/service/*, HMAC-signed)."""
 import pytest
 
 from app.config import settings
+from app.core import signing
 
 SERVICE_KEY = "hub-test-key"
 
 
 @pytest.fixture
 def service_headers():
+    """Yields a callable producing fresh signed headers per call — the
+    signing scheme's replay guard rejects reusing the same nonce twice, so a
+    static header dict can't be reused across multiple requests in one test."""
     original = settings.SERVICE_API_KEY
     settings.SERVICE_API_KEY = SERVICE_KEY
-    yield {"X-Service-Key": SERVICE_KEY}
+    yield lambda: signing.signed_headers(SERVICE_KEY, b"")
     settings.SERVICE_API_KEY = original
 
 
@@ -21,13 +25,15 @@ def test_service_disabled_without_key(client):
     assert resp.status_code == 403
 
 
-def test_service_rejects_bad_key(client, service_headers):
-    resp = client.get("/api/v1/service/stats", headers={"X-Service-Key": "wrong"})
+def test_service_rejects_bad_signature(client, service_headers):
+    resp = client.get(
+        "/api/v1/service/stats", headers=signing.signed_headers("wrong-secret", b"")
+    )
     assert resp.status_code == 401
 
 
 def test_service_stats(client, service_headers, registered_user):
-    resp = client.get("/api/v1/service/stats", headers=service_headers)
+    resp = client.get("/api/v1/service/stats", headers=service_headers())
     assert resp.status_code == 200
     data = resp.json()["data"]
     for key in (
@@ -43,7 +49,7 @@ def test_service_stats(client, service_headers, registered_user):
 
 
 def test_service_users(client, service_headers, registered_user):
-    resp = client.get("/api/v1/service/users?limit=10", headers=service_headers)
+    resp = client.get("/api/v1/service/users?limit=10", headers=service_headers())
     assert resp.status_code == 200
     data = resp.json()["data"]
     assert data["total"] >= 1
@@ -56,7 +62,7 @@ def test_service_users(client, service_headers, registered_user):
 def test_service_users_search(client, service_headers, registered_user):
     email = registered_user["data"]["email"]
     resp = client.get(
-        f"/api/v1/service/users?search={email}", headers=service_headers
+        f"/api/v1/service/users?search={email}", headers=service_headers()
     )
     assert resp.status_code == 200
     items = resp.json()["data"]["items"]
@@ -64,7 +70,7 @@ def test_service_users_search(client, service_headers, registered_user):
 
 
 def test_service_payments_shape(client, service_headers):
-    resp = client.get("/api/v1/service/payments", headers=service_headers)
+    resp = client.get("/api/v1/service/payments", headers=service_headers())
     assert resp.status_code == 200
     data = resp.json()["data"]
     assert "items" in data and "total" in data
@@ -72,7 +78,7 @@ def test_service_payments_shape(client, service_headers):
 
 
 def test_service_payment_methods_shape(client, service_headers):
-    resp = client.get("/api/v1/service/payment-methods", headers=service_headers)
+    resp = client.get("/api/v1/service/payment-methods", headers=service_headers())
     assert resp.status_code == 200
     data = resp.json()["data"]
     assert "mandates" in data
@@ -82,7 +88,7 @@ def test_service_payment_methods_shape(client, service_headers):
 
 
 def test_service_funding_shape(client, service_headers):
-    resp = client.get("/api/v1/service/funding", headers=service_headers)
+    resp = client.get("/api/v1/service/funding", headers=service_headers())
     assert resp.status_code == 200
     data = resp.json()["data"]
     assert "items" in data
@@ -93,12 +99,12 @@ def test_service_block_unblock(client, service_headers, registered_user, db):
     from app.models.user import User
 
     uid = registered_user["data"]["id"]
-    r = client.post(f"/api/v1/service/users/{uid}/block", headers=service_headers)
+    r = client.post(f"/api/v1/service/users/{uid}/block", headers=service_headers())
     assert r.status_code == 200
     db.expire_all()
     assert db.query(User).filter(User.id == uid).first().is_active is False
 
-    r = client.post(f"/api/v1/service/users/{uid}/unblock", headers=service_headers)
+    r = client.post(f"/api/v1/service/users/{uid}/unblock", headers=service_headers())
     assert r.status_code == 200
     db.expire_all()
     assert db.query(User).filter(User.id == uid).first().is_active is True
@@ -148,7 +154,7 @@ def test_service_payments_reflects_history(client, service_headers, auth_headers
     )
     db.commit()
 
-    resp = client.get("/api/v1/service/payments?limit=100", headers=service_headers)
+    resp = client.get("/api/v1/service/payments?limit=100", headers=service_headers())
     assert resp.status_code == 200
     items = resp.json()["data"]["items"]
     match = [i for i in items if i["payment_id"] == "pay_service_feed_001"]

@@ -37,7 +37,7 @@ class UserSubscription(Base):
     stripe_subscription_id = Column(String(255), unique=True, nullable=True)
     razorpay_subscription_id = Column(String(255), unique=True, nullable=True)
     gateway = Column(String(20), default="razorpay", nullable=False)  # razorpay | stripe
-    # status values: trialing | active | past_due | halted | canceled | created
+    # status values: trialing | active | past_due | paused | halted | canceled | created
     status = Column(String(50), default="active", nullable=False)
     trial_end = Column(DateTime, nullable=True)
     current_period_start = Column(DateTime, nullable=True)

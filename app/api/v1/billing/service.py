@@ -366,11 +366,27 @@ class BillingService:
             self._rzp_downgrade(sub_entity, "halted", db)
         elif event in ("subscription.cancelled", "subscription.completed"):
             self._rzp_downgrade(sub_entity, "canceled", db)
+        elif event == "subscription.paused":
+            # Merchant-initiated pause (e.g. from the Razorpay dashboard) —
+            # unlike halted/canceled this isn't terminal, so the plan is left
+            # untouched (not downgraded to Free) for subscription.resumed to
+            # restore without needing to remember what plan they were on.
+            sub = self._rzp_find(sub_entity, db)
+            self._rzp_set_status(sub_entity, "paused", db)
+            if sub:
+                self._notify_subscription_ended(sub, "paused", db)
+        elif event == "subscription.resumed":
+            self._rzp_set_status(sub_entity, "active", db)
         elif event in ("refund.processed", "payment.refunded"):
             # Razorpay auto-refunds the trial mandate-verification charge —
             # reflect that in Billing History instead of leaving it looking
             # like an unexplained pending charge forever.
             self._rzp_handle_refund(payment_entity, refund_entity, db)
+        else:
+            # Anything unhandled (subscription.updated, subscription.expired,
+            # etc.) is logged instead of silently dropped, so a state
+            # transition we don't yet react to is at least visible.
+            logger.info("Unhandled Razorpay webhook event: %s", event)
 
     def _rzp_handle_refund(self, payment_entity: dict, refund_entity: dict, db: Session):
         pay_id = payment_entity.get("id") or refund_entity.get("payment_id")
@@ -442,6 +458,7 @@ class BillingService:
             razorpay_payment_id=pay_id,
             razorpay_invoice_id=sub.razorpay_subscription_id,
             gateway="razorpay",
+            method=payment_entity.get("method"),
             amount=amt,
             currency=(payment_entity.get("currency") or "INR").upper(),
             status="trial_verification",
@@ -475,6 +492,7 @@ class BillingService:
             razorpay_payment_id=pay_id,
             razorpay_invoice_id=sub_entity.get("id"),
             gateway="razorpay",
+            method=payment_entity.get("method"),
             amount=amt,
             currency=(payment_entity.get("currency") or "INR").upper(),
             status="paid",
@@ -500,6 +518,67 @@ class BillingService:
         if free_plan:
             sub.plan_id = free_plan.id
         db.commit()
+        self._notify_subscription_ended(sub, status, db)
+
+    def _notify_subscription_ended(self, sub: UserSubscription, status: str, db: Session):
+        """In-app + push notification telling the user their subscription has
+        ended (or been paused), for the case where this happened outside the
+        app (mandate revoked at the bank, Razorpay exhausted debit retries, or
+        a merchant-initiated pause) — the user has no other way of finding out
+        until they next open the app (best-effort, mirrors
+        _notify_trial_started)."""
+        try:
+            notif_type = "subscription_ended"
+            if status == "halted":
+                title = "Your Rupexi Pro payment failed"
+                body = (
+                    "We couldn't renew your subscription after several attempts. "
+                    "You're back on the Free plan — update your payment method to "
+                    "resubscribe."
+                )
+            elif status == "paused":
+                notif_type = "subscription_paused"
+                title = "Your Rupexi Pro subscription is paused"
+                body = (
+                    "Your subscription has been paused, so you're on the Free "
+                    "plan for now. It'll resume automatically once unpaused."
+                )
+            else:
+                title = "Your Rupexi Pro subscription has ended"
+                body = (
+                    "Your subscription was cancelled — this can happen if the "
+                    "auto-pay mandate was cancelled from your bank or UPI app. "
+                    "You're back on the Free plan."
+                )
+
+            db.execute(text("""
+                INSERT INTO notifications (id, user_id, title, body, type, is_read, data, created_at)
+                VALUES (:id, :uid, :title, :body, :type, false, CAST(:data AS JSONB), NOW())
+            """), {
+                "id": str(uuid.uuid4()),
+                "uid": str(sub.user_id),
+                "title": title,
+                "body": body,
+                "type": notif_type,
+                "data": f'{{"status": "{status}"}}',
+            })
+            db.commit()
+
+            token_row = db.execute(text(
+                "SELECT device_token FROM user_device_tokens WHERE user_id = :uid LIMIT 1"
+            ), {"uid": str(sub.user_id)}).first()
+            if token_row and token_row[0]:
+                from app.utils.fcm import send_push_notification
+                send_push_notification(
+                    token_row[0], title, body,
+                    {"type": "subscription_ended", "status": status},
+                    "subscription_ended",
+                )
+        except Exception:
+            # Never let a notification failure break the billing webhook —
+            # but roll back so a failed INSERT doesn't poison the caller's
+            # transaction for whatever runs next in this request.
+            db.rollback()
 
     def _activate_plan(self, user: User, plan: BillingPlan, db: Session):
         """Directly activate plan (for free plan or manual activation)"""
@@ -740,13 +819,21 @@ class BillingService:
     def get_invoices(self, user: User, db: Session) -> list:
         # DB invoices
         db_invoices = db.execute(text("""
-            SELECT stripe_invoice_id, amount, currency, status, invoice_pdf_url, paid_at, created_at
+            SELECT id, stripe_invoice_id, stripe_payment_id, razorpay_invoice_id,
+                   razorpay_payment_id, gateway, method, amount, currency, status,
+                   invoice_pdf_url, paid_at, created_at
             FROM payment_history WHERE user_id = :uid ORDER BY created_at DESC LIMIT 20
         """), {"uid": str(user.id)}).fetchall()
 
         result = [
             {
-                "id": r.stripe_invoice_id or str(uuid.uuid4()),
+                "id": r.razorpay_payment_id or r.stripe_invoice_id or str(r.id),
+                # Gateway-agnostic fields the detail screen renders directly —
+                # a real payment/txn id and the order/subscription it belongs to.
+                "payment_id": r.razorpay_payment_id or r.stripe_payment_id,
+                "order_id": r.razorpay_invoice_id or r.stripe_invoice_id,
+                "gateway": r.gateway or ("stripe" if r.stripe_invoice_id else "razorpay"),
+                "method": r.method,
                 "amount": float(r.amount) if r.amount else 0,
                 "currency": r.currency or "INR",
                 "status": r.status,

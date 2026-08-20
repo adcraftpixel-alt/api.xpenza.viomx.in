@@ -12,16 +12,18 @@ class Settings(BaseSettings):
     GROQ_API_KEY: str = ""
     STRIPE_SECRET_KEY: str = ""
     STRIPE_WEBHOOK_SECRET: str = ""
-    # Razorpay (INR recurring auto-pay: UPI AutoPay + card e-mandate)
-    RAZORPAY_KEY_ID: str = ""
-    RAZORPAY_KEY_SECRET: str = ""
-    RAZORPAY_WEBHOOK_SECRET: str = ""
+    # Razorpay credentials live only on the Control Hub — it creates/cancels
+    # subscriptions and verifies webhook signatures on Rupexi's behalf (see
+    # app/services/control_hub.py). Rupexi holds none itself.
     # Trial length in days before the first ₹199 auto-debit
     TRIAL_DAYS: int = 30
-    # Machine-to-machine key the VIOMX Control Hub sends to Rupexi (X-Service-Key).
+    # Machine-to-machine key the VIOMX Control Hub uses to HMAC-sign requests
+    # to Rupexi (see app/core/signing.py) — never sent as a bearer header.
     SERVICE_API_KEY: str = ""
     # VIOMX Control Hub — Rupexi pulls plans/caps and reports purchases here.
-    # CONTROL_HUB_KEY is presented as X-Product-Key (must equal RUPEXI_INGEST_KEY on the Hub).
+    # CONTROL_HUB_KEY signs outbound requests (must equal RUPEXI_INGEST_KEY on
+    # the Hub); PRODUCT_CODE identifies which product's key the Hub verifies
+    # against (X-Product-Code header).
     CONTROL_HUB_URL: str = ""          # e.g. https://api-controlhub.viomx.in/api/v1
     CONTROL_HUB_KEY: str = ""
     PRODUCT_CODE: str = "RUPEXI"

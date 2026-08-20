@@ -4,12 +4,19 @@ Rupexi → VIOMX Control Hub client.
 The Control Hub is the source of truth for plans/pricing and per-plan caps.
 Rupexi pulls them here and reports purchases so buyers appear in the Hub.
 All calls are best-effort: the Hub being down must never break Rupexi.
+
+Requests are HMAC-signed (app/core/signing.py) instead of sending
+CONTROL_HUB_KEY itself as a bearer value: X-Product-Code identifies which
+product's key the Hub should verify against, and X-Signature proves
+possession of that key without ever putting it on the wire.
 """
+import json
 import logging
 
 import httpx
 
 from app.config import settings
+from app.core import signing
 
 log = logging.getLogger("rupexi.control_hub")
 
@@ -20,17 +27,31 @@ def is_configured() -> bool:
     return bool(settings.CONTROL_HUB_URL and settings.CONTROL_HUB_KEY)
 
 
-def _headers() -> dict:
-    return {"X-Product-Key": settings.CONTROL_HUB_KEY}
+def _signed_headers(body: bytes) -> dict:
+    return {
+        "X-Product-Code": settings.PRODUCT_CODE,
+        "Content-Type": "application/json",
+        **signing.signed_headers(settings.CONTROL_HUB_KEY, body),
+    }
+
+
+def _get(path: str) -> httpx.Response:
+    url = f"{settings.CONTROL_HUB_URL.rstrip('/')}{path}"
+    return httpx.get(url, headers=_signed_headers(b""), timeout=_TIMEOUT)
+
+
+def _post(path: str, payload: dict) -> httpx.Response:
+    url = f"{settings.CONTROL_HUB_URL.rstrip('/')}{path}"
+    body = json.dumps(payload).encode()
+    return httpx.post(url, headers=_signed_headers(body), content=body, timeout=_TIMEOUT)
 
 
 def fetch_plans() -> list | None:
     """GET the Hub's plans + caps for this product. Returns list or None on failure."""
     if not is_configured():
         return None
-    url = f"{settings.CONTROL_HUB_URL.rstrip('/')}/ingest/plans"
     try:
-        resp = httpx.get(url, headers=_headers(), timeout=_TIMEOUT)
+        resp = _get("/ingest/plans")
         resp.raise_for_status()
         body = resp.json()
         return body.get("plans", [])
@@ -47,14 +68,13 @@ def register_tenant(external_user_id: str, email: str, name: str | None = None,
     paying ones. Best-effort and idempotent: safe to call on every login."""
     if not is_configured():
         return False
-    url = f"{settings.CONTROL_HUB_URL.rstrip('/')}/ingest/register"
     try:
-        resp = httpx.post(url, headers=_headers(), json={
+        resp = _post("/ingest/register", {
             "external_user_id": external_user_id,
             "email": email,
             "name": name,
             "phone": phone,
-        }, timeout=_TIMEOUT)
+        })
         resp.raise_for_status()
         return True
     except Exception as e:
@@ -66,9 +86,8 @@ def report_purchase(payload: dict) -> bool:
     """POST a purchase to the Hub ingest endpoint. Best-effort."""
     if not is_configured():
         return False
-    url = f"{settings.CONTROL_HUB_URL.rstrip('/')}/ingest/purchase"
     try:
-        resp = httpx.post(url, headers=_headers(), json=payload, timeout=_TIMEOUT)
+        resp = _post("/ingest/purchase", payload)
         resp.raise_for_status()
         return True
     except Exception as e:
@@ -104,7 +123,6 @@ def create_subscription(
     """
     if not is_configured():
         raise HubNotConfigured("CONTROL_HUB_URL/CONTROL_HUB_KEY are not configured")
-    url = f"{settings.CONTROL_HUB_URL.rstrip('/')}/internal/create-subscription"
     body = {
         "plan_name": plan_name,
         "start_at": start_at,
@@ -113,7 +131,7 @@ def create_subscription(
         "notify_phone": notify_phone,
     }
     try:
-        resp = httpx.post(url, headers=_headers(), json=body, timeout=_TIMEOUT)
+        resp = _post("/internal/create-subscription", body)
     except Exception as e:
         raise HubRequestError(f"Could not reach Control Hub: {e}") from e
     if resp.status_code >= 400:
@@ -129,10 +147,9 @@ def cancel_subscription(subscription_id: str, at_cycle_end: bool = True) -> dict
     behalf. Not best-effort — a failure here must surface to the caller."""
     if not is_configured():
         raise HubNotConfigured("CONTROL_HUB_URL/CONTROL_HUB_KEY are not configured")
-    url = f"{settings.CONTROL_HUB_URL.rstrip('/')}/internal/cancel-subscription"
     body = {"subscription_id": subscription_id, "at_cycle_end": at_cycle_end}
     try:
-        resp = httpx.post(url, headers=_headers(), json=body, timeout=_TIMEOUT)
+        resp = _post("/internal/cancel-subscription", body)
     except Exception as e:
         raise HubRequestError(f"Could not reach Control Hub: {e}") from e
     if resp.status_code >= 400:

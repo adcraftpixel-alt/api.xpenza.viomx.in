@@ -496,18 +496,40 @@ def test_subscribe_nonexistent_plan(client, auth_headers):
     assert resp.status_code == 400
 
 
+RZP_RELAY_SERVICE_KEY = "hub-test-key-billing"
+
+
 def _rzp_webhook(client, event, sub_id, payment=None, sub_extra=None):
+    """Simulate the Control Hub relaying an already signature-verified Razorpay
+    webhook to POST /api/v1/service/subscriptions/webhook-relay — the only
+    path a subscription webhook reaches Rupexi through in production (Rupexi
+    holds no Razorpay webhook secret; see app/api/v1/service/router.py)."""
+    import json as json_module
+
+    from app.config import settings
+    from app.core import signing
+
     entity = {"id": sub_id}
     if sub_extra:
         entity.update(sub_extra)
     payload = {"event": event, "payload": {"subscription": {"entity": entity}}}
     if payment is not None:
         payload["payload"]["payment"] = {"entity": payment}
-    return client.post(
-        "/api/v1/billing/razorpay/webhook",
-        content=json.dumps(payload),
-        headers={"Content-Type": "application/json"},
-    )
+    body = json_module.dumps(payload).encode()
+
+    original = settings.SERVICE_API_KEY
+    settings.SERVICE_API_KEY = RZP_RELAY_SERVICE_KEY
+    try:
+        return client.post(
+            "/api/v1/service/subscriptions/webhook-relay",
+            content=body,
+            headers={
+                "Content-Type": "application/json",
+                **signing.signed_headers(RZP_RELAY_SERVICE_KEY, body),
+            },
+        )
+    finally:
+        settings.SERVICE_API_KEY = original
 
 
 def test_razorpay_webhook_authenticated_then_charged(client, auth_headers, db, monkeypatch):
@@ -603,6 +625,47 @@ def test_razorpay_webhook_halted_downgrades(client, auth_headers, db, monkeypatc
     assert sub.plan_id == free.id
 
 
+def test_razorpay_webhook_paused_then_resumed(client, auth_headers, db, monkeypatch):
+    """paused suspends Pro entitlement without losing the plan assignment
+    (unlike halted/canceled); resumed restores it — no separate resubscribe
+    needed, since Razorpay itself resumes billing on the same mandate."""
+    from app.models.billing import UserSubscription
+    from app.core.plan_limits import get_user_plan
+
+    _mock_hub_create_subscription(monkeypatch)
+    pro = _pro_plan(db)
+    assert pro is not None
+    sub_id = client.post(
+        "/api/v1/billing/subscribe",
+        json={"plan_id": str(pro.id)},
+        headers=auth_headers,
+    ).json()["data"]["subscription_id"]
+    _rzp_webhook(client, "subscription.activated", sub_id)
+
+    me = client.get("/api/v1/users/me", headers=auth_headers).json()["data"]
+    db.expire_all()
+    assert get_user_plan(me["id"], db) == "Pro"
+
+    r = _rzp_webhook(client, "subscription.paused", sub_id)
+    assert r.status_code == 200
+    db.expire_all()
+    sub = db.query(UserSubscription).filter(
+        UserSubscription.razorpay_subscription_id == sub_id
+    ).first()
+    assert sub.status == "paused"
+    assert sub.plan_id == pro.id
+    assert get_user_plan(me["id"], db) == "Free"
+
+    r2 = _rzp_webhook(client, "subscription.resumed", sub_id)
+    assert r2.status_code == 200
+    db.expire_all()
+    sub = db.query(UserSubscription).filter(
+        UserSubscription.razorpay_subscription_id == sub_id
+    ).first()
+    assert sub.status == "active"
+    assert get_user_plan(me["id"], db) == "Pro"
+
+
 def test_subscribe_blocks_when_active(client, auth_headers, db, monkeypatch):
     """A second subscribe while trialing/active is rejected (no mandate stacking)."""
     _mock_hub_create_subscription(monkeypatch)
@@ -685,12 +748,80 @@ def test_plans_sync_from_hub_single_plan(client, db, monkeypatch):
     assert plans[0]["price_monthly"] == 199.0
 
 
-def test_razorpay_webhook_bad_json(client):
-    """Malformed webhook body is swallowed gracefully."""
-    resp = client.post(
-        "/api/v1/billing/razorpay/webhook",
-        content="not-json",
-        headers={"Content-Type": "application/json"},
+def test_razorpay_webhook_relay_requires_service_key(client):
+    """The relay endpoint is service-key gated — Rupexi no longer accepts a
+    raw Razorpay webhook (no signature verification of its own)."""
+    from app.config import settings
+
+    original = settings.SERVICE_API_KEY
+    settings.SERVICE_API_KEY = ""
+    try:
+        payload = {
+            "event": "subscription.activated",
+            "payload": {"subscription": {"entity": {"id": "sub_mock_unauth"}}},
+        }
+        resp = client.post(
+            "/api/v1/service/subscriptions/webhook-relay",
+            json=payload,
+        )
+        assert resp.status_code == 403
+    finally:
+        settings.SERVICE_API_KEY = original
+
+
+# ---------------------------------------------------------------------------
+# Background sweep: retry unsynced Control Hub purchase reports
+# ---------------------------------------------------------------------------
+
+def test_sync_unsynced_hub_subscriptions_sweep(client, auth_headers, db, monkeypatch):
+    """The Celery sweep retries hub_synced_at=NULL trialing/active
+    subscriptions (not just on next login) and marks them synced on success;
+    an already-synced row is left alone (no redundant report)."""
+    from app.models.billing import UserSubscription
+    from app.services import control_hub
+    from app.workers import billing_tasks
+
+    _mock_hub_create_subscription(monkeypatch)
+    pro = _pro_plan(db)
+    assert pro is not None
+    sub_id = client.post(
+        "/api/v1/billing/subscribe",
+        json={"plan_id": str(pro.id)},
+        headers=auth_headers,
+    ).json()["data"]["subscription_id"]
+    # subscribe() leaves the row in 'created' state (pre-webhook) with
+    # hub_synced_at unset — force it into 'trialing' with no sync recorded,
+    # simulating a webhook-time _report_purchase_to_hub call that failed.
+    sub = db.query(UserSubscription).filter(
+        UserSubscription.razorpay_subscription_id == sub_id
+    ).first()
+    sub.status = "trialing"
+    sub.hub_synced_at = None
+    db.commit()
+
+    report_calls = []
+    monkeypatch.setattr(control_hub, "is_configured", lambda: True)
+    monkeypatch.setattr(
+        control_hub, "report_purchase",
+        lambda payload: report_calls.append(payload) or True,
     )
-    assert resp.status_code == 200
-    assert resp.json().get("received") is True
+    # The task opens its own DB session (SessionLocal) independent of the
+    # test's transactional `db` fixture — point it at the same session so
+    # the row created above via `db` is visible to it within this test.
+    monkeypatch.setattr(billing_tasks, "get_db_session", lambda: db)
+
+    result = billing_tasks.sync_unsynced_hub_subscriptions()
+    assert result == {"checked": 1, "synced": 1}
+    assert len(report_calls) == 1
+    assert report_calls[0]["is_trial"] is True
+
+    db.expire_all()
+    sub = db.query(UserSubscription).filter(
+        UserSubscription.razorpay_subscription_id == sub_id
+    ).first()
+    assert sub.hub_synced_at is not None
+
+    # Second sweep: already synced, so no further report is sent.
+    result2 = billing_tasks.sync_unsynced_hub_subscriptions()
+    assert result2 == {"checked": 0, "synced": 0}
+    assert len(report_calls) == 1
