@@ -9,6 +9,7 @@ os.environ["REDIS_URL"] = "redis://localhost:6379/1"  # db 1 for tests
 os.environ["ENVIRONMENT"] = "test"
 
 import pytest
+import redis as redis_lib
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
@@ -18,6 +19,20 @@ from app.database import Base, get_db
 
 engine = create_engine(TEST_DB_URL)
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+
+@pytest.fixture(autouse=True)
+def _flush_test_redis():
+    """Rate limiting / account lockout / OTP-attempt state (app/core/rate_limit.py,
+    app/core/token_blacklist.py, app/api/v1/auth/service.py) all live in Redis
+    db 1. TestClient requests all share one IP, so without a flush between
+    tests, lockouts and rate limits from one test would bleed into the next."""
+    try:
+        r = redis_lib.from_url(os.environ["REDIS_URL"], decode_responses=True)
+        r.flushdb()
+    except Exception:
+        pass
+    yield
 
 
 @pytest.fixture(scope="session", autouse=True)

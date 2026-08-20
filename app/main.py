@@ -2,9 +2,11 @@ import logging
 import os
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from app.config import settings
+from app.core import rate_limit
 
 logging.basicConfig(
     level=logging.INFO,
@@ -20,11 +22,47 @@ app = FastAPI(
     redoc_url=None,          # disabled — use /api-docs instead (self-hosted)
 )
 
-# CORS — allow all origins; JWT is passed via Authorization header (not cookies)
-# so allow_credentials stays False, which is compatible with allow_origins=["*"].
+
+class GlobalRateLimitMiddleware(BaseHTTPMiddleware):
+    """Second layer behind nginx's `limit_req` zones (infrastructure/nginx/
+    nginx.conf): caps total requests per IP across every route, so a script
+    hammering the API directly (bypassing nginx) or hitting a non-auth
+    endpoint still gets throttled. Also tracks 401 spikes per IP for the
+    admin alert in app/core/rate_limit.py."""
+
+    async def dispatch(self, request: Request, call_next):
+        if request.url.path == "/health":
+            return await call_next(request)
+        ip = rate_limit.get_client_ip(request)
+        try:
+            rate_limit.enforce_global_limit(ip)
+        except HTTPException as e:
+            return JSONResponse(
+                status_code=e.status_code,
+                content={"success": False, "message": e.detail, "errors": []},
+                headers=e.headers or {},
+            )
+        response = await call_next(request)
+        if response.status_code == 401:
+            rate_limit.note_unauthorized(ip)
+        return response
+
+
+# Added before CORSMiddleware so CORS ends up as the outermost layer — its
+# headers still get attached to 429s this middleware short-circuits.
+app.add_middleware(GlobalRateLimitMiddleware)
+
+# CORS — origins are locked down in production (ENVIRONMENT=production); left
+# wide open in dev/staging for convenience. JWT is passed via Authorization
+# header (not cookies), so allow_credentials stays False.
+_cors_origins = (
+    [settings.FRONTEND_URL, settings.ADMIN_URL]
+    if settings.ENVIRONMENT == "production"
+    else ["*"]
+)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -37,6 +75,7 @@ async def http_exception_handler(request: Request, exc: HTTPException):
     return JSONResponse(
         status_code=exc.status_code,
         content={"success": False, "message": exc.detail, "errors": []},
+        headers=exc.headers or {},
     )
 
 
@@ -71,6 +110,8 @@ def health():
 
 @app.get("/test", response_class=HTMLResponse, tags=["Dev"])
 async def api_test_page():
+    if settings.ENVIRONMENT == "production":
+        raise HTTPException(status_code=404)
     html_path = os.path.join(os.path.dirname(__file__), "api", "test_page.html")
     with open(html_path) as f:
         return f.read()
@@ -80,6 +121,8 @@ async def api_test_page():
          summary="Self-hosted API documentation (no CDN required)")
 async def api_docs_page():
     """Full interactive API docs using Swagger UI — works offline, no CDN."""
+    if settings.ENVIRONMENT == "production":
+        raise HTTPException(status_code=404)
     from fastapi.openapi.docs import get_swagger_ui_html
     return get_swagger_ui_html(
         openapi_url="/openapi.json",
@@ -92,6 +135,8 @@ async def api_docs_page():
 
 @app.get("/api-status", tags=["Dev"])
 async def api_status():
+    if settings.ENVIRONMENT == "production":
+        raise HTTPException(status_code=404)
     routes = []
     for route in app.routes:
         if hasattr(route, "methods"):
@@ -132,7 +177,8 @@ def startup_event():
         logger.error(f"Startup error during billing plan seed: {e}")
 
     try:
-        _seed_demo_user()
+        if settings.ENVIRONMENT != "production":
+            _seed_demo_user()
     except Exception as e:
         logger.error(f"Startup error during demo user seed: {e}")
 

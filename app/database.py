@@ -2,6 +2,11 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
 from app.config import settings
 
+# pool_size + max_overflow = 30 connections per uvicorn process. Dockerfile
+# runs a single `uvicorn` process (no --workers), so this is 30 of Postgres's
+# default max_connections=100 — safe headroom for Celery workers + ai_service
+# + interactive psql sessions. Re-check this math before adding --workers N
+# or running multiple backend replicas (each process gets its own pool).
 engine = create_engine(
     settings.DATABASE_URL,
     pool_pre_ping=True,

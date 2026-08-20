@@ -17,6 +17,7 @@ class PaymentHistory(Base):
     razorpay_invoice_id = Column(String(255), nullable=True)
     razorpay_payment_id = Column(String(255), nullable=True)
     gateway = Column(String(20), nullable=True)  # razorpay | stripe
+    method = Column(String(30), nullable=True)  # upi | card | netbanking | wallet
     amount = Column(Numeric(10, 2), nullable=True)
     currency = Column(String(10), default="INR", nullable=False)
     status = Column(String(50), nullable=True)
