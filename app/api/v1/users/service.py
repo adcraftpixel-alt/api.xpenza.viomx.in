@@ -15,6 +15,23 @@ from app.utils.storage import upload_to_s3, generate_unique_filename
 logger = logging.getLogger(__name__)
 
 
+def _sync_tenant_to_control_hub(user: User) -> None:
+    """Re-register this user with the Control Hub after a profile update so it
+    picks up the real name/email (the initial registration at login time only
+    has a phone-number placeholder — see auth/service.py `_login_verified_phone`).
+    Best-effort: never blocks the request."""
+    try:
+        from app.services import control_hub
+        control_hub.register_tenant(
+            external_user_id=str(user.id),
+            email=user.email or f"{user.phone}@rupexi.phone",
+            name=user.name,
+            phone=user.phone,
+        )
+    except Exception:
+        pass
+
+
 def _resize_avatar(data: bytes) -> bytes:
     """Shrink the avatar to a small square JPEG so it stays tiny regardless of
     client (image_picker's resize is a no-op on web). Returns the original
@@ -89,6 +106,11 @@ class UserService:
     def update_me(self, db: Session, user: User, data: UpdateUserRequest) -> User:
         if data.name is not None:
             user.name = data.name
+        if data.email is not None:
+            existing = db.query(User).filter(User.email == data.email, User.id != user.id).first()
+            if existing:
+                raise ConflictError("Email already in use")
+            user.email = data.email
         if data.phone is not None:
             existing = db.query(User).filter(User.phone == data.phone, User.id != user.id).first()
             if existing:
@@ -108,6 +130,10 @@ class UserService:
             user.avatar_url = data.avatar_url
         db.commit()
         db.refresh(user)
+
+        if data.name is not None or data.email is not None:
+            _sync_tenant_to_control_hub(user)
+
         return user
 
     def complete_onboarding(self, db: Session, user: User, data: OnboardingRequest) -> User:

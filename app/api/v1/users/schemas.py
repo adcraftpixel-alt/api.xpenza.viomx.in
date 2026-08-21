@@ -22,6 +22,7 @@ class UserResponse(BaseModel):
 
 class UpdateUserRequest(BaseModel):
     name: Optional[str] = None
+    email: Optional[EmailStr] = None
     phone: Optional[str] = None
     monthly_income: Optional[float] = None
     currency: Optional[str] = None
