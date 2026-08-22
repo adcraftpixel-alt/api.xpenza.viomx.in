@@ -10,6 +10,9 @@ class Settings(BaseSettings):
     REFRESH_TOKEN_EXPIRE_DAYS: int = 30
     OPENAI_API_KEY: str = ""
     GROQ_API_KEY: str = ""
+    # Comma-separated pool of Groq keys for OCR vision — see .env comment.
+    # Falls back to GROQ_API_KEY when unset.
+    GROQ_API_KEYS: str = ""
     STRIPE_SECRET_KEY: str = ""
     STRIPE_WEBHOOK_SECRET: str = ""
     # Razorpay credentials live only on the Control Hub — it creates/cancels
@@ -64,6 +67,13 @@ class Settings(BaseSettings):
     # Get it from Firebase console → Project settings → Service accounts →
     # "Generate new private key". Paste the whole JSON as one env var.
     FIREBASE_SERVICE_ACCOUNT: str = ""
+    # Google Cloud Vision service-account JSON (full JSON string) — enables
+    # document-text OCR for receipt scanning (app/api/v1/ocr/service.py).
+    # Get it from Google Cloud Console → IAM & Admin → Service Accounts →
+    # create one with the "Cloud Vision AI Service Agent" role (or just
+    # "Editor" for a quick start) → Keys → Add key → JSON. Paste the whole
+    # JSON as one env var, same pattern as FIREBASE_SERVICE_ACCOUNT above.
+    GOOGLE_CLOUD_CREDENTIALS: str = ""
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

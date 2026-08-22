@@ -40,10 +40,13 @@ class QuickAddItem(BaseModel):
     category_name: str  # category name string, we'll look up the ID
     payment_method: str = "cash"
     expense_date: Optional[date] = None
+    category_id: Optional[str] = None  # explicit override — skips name lookup/AI when set
 
 
 class BulkAddRequest(BaseModel):
     items: List[QuickAddItem]
+    merchant: Optional[str] = None  # shared across all items, e.g. from a scanned receipt
+    source: str = "quick_add"
 
 router = APIRouter(tags=["Expenses"])
 service = ExpenseService()
@@ -290,18 +293,23 @@ def bulk_create_expenses(
     today = date_type.today()
 
     for item in request.items:
-        # Try exact name match first, then AI-based multilingual match
-        cat = db.query(Category).filter(
-            Category.user_id == current_user.id,
-            Category.name.ilike(f'%{item.category_name}%'),
-        ).first()
+        if item.category_id:
+            # Caller already resolved/overrode the category (e.g. user manually
+            # corrected it before saving) — skip the name lookup entirely.
+            category_id = item.category_id
+        else:
+            # Try exact name match first, then AI-based multilingual match
+            cat = db.query(Category).filter(
+                Category.user_id == current_user.id,
+                Category.name.ilike(f'%{item.category_name}%'),
+            ).first()
 
-        category_id = str(cat.id) if cat else None
+            category_id = str(cat.id) if cat else None
 
-        if not category_id:
-            # Use AI categorizer to match description to user's real categories
-            suggestion = suggest_category(item.description, str(current_user.id), db)
-            category_id = suggestion.get("category_id")
+            if not category_id:
+                # Use AI categorizer to match description to user's real categories
+                suggestion = suggest_category(item.description, str(current_user.id), db)
+                category_id = suggestion.get("category_id")
 
         data = CreateExpenseRequest(
             amount=item.amount,
@@ -310,7 +318,8 @@ def bulk_create_expenses(
             payment_method=item.payment_method,
             expense_date=item.expense_date or today,
             currency="INR",
-            source="quick_add",
+            source=request.source,
+            merchant=request.merchant,
         )
         expense = service.create(db, str(current_user.id), data)
         created.append(expense)
