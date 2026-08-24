@@ -21,6 +21,10 @@ class CreateExpenseRequest(BaseModel):
     # Family only: attribute this spend to a specific member (their user_id).
     # Defaults to the creator when omitted.
     spent_by_user_id: Optional[str] = None
+    # Client-generated key, stable across retries of the same save action —
+    # lets a retry after a client-side timeout replay the original result
+    # instead of creating a duplicate expense.
+    idempotency_key: Optional[str] = None
 
 
 class UpdateExpenseRequest(BaseModel):

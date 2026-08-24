@@ -203,3 +203,47 @@ def test_dashboard_summary(client, auth_headers):
     ]
     for key in required_keys:
         assert key in data, f"Missing key in dashboard summary: {key}"
+
+
+def test_create_expense_idempotent_retry_does_not_duplicate(client, auth_headers):
+    """A retried save (same idempotency_key, e.g. after a client timeout)
+    must replay the original expense instead of creating a second one."""
+    payload = {**EXPENSE_PAYLOAD, "idempotency_key": "retry-key-123"}
+
+    first = client.post("/api/v1/expenses", json=payload, headers=auth_headers)
+    assert first.status_code == 200
+    first_id = first.json()["data"]["id"]
+
+    second = client.post("/api/v1/expenses", json=payload, headers=auth_headers)
+    assert second.status_code == 200
+    assert second.json()["data"]["id"] == first_id
+
+    listed = client.get("/api/v1/expenses", headers=auth_headers)
+    matching = [e for e in listed.json()["data"]["items"] if e["id"] == first_id]
+    assert len(matching) == 1
+
+
+def test_bulk_create_idempotent_retry_does_not_duplicate(client, auth_headers):
+    payload = {
+        "merchant": "BigBasket",
+        "source": "ocr",
+        "idempotency_key": "bulk-retry-key-456",
+        "items": [
+            {"amount": 100.0, "description": "Milk", "category_name": "Groceries"},
+            {"amount": 50.0, "description": "Bread", "category_name": "Groceries"},
+        ],
+    }
+
+    first = client.post("/api/v1/expenses/bulk-create", json=payload, headers=auth_headers)
+    assert first.status_code == 200
+    first_ids = {e["id"] for e in first.json()["data"]}
+    assert len(first_ids) == 2
+
+    second = client.post("/api/v1/expenses/bulk-create", json=payload, headers=auth_headers)
+    assert second.status_code == 200
+    second_ids = {e["id"] for e in second.json()["data"]}
+    assert second_ids == first_ids
+
+    listed = client.get("/api/v1/expenses", headers=auth_headers)
+    matching = [e for e in listed.json()["data"]["items"] if e["id"] in first_ids]
+    assert len(matching) == 2

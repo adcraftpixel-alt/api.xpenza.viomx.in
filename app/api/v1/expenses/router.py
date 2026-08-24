@@ -1,10 +1,11 @@
 import os
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, List
 from datetime import date, date as date_type
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from app.database import get_db
+from app.database import get_db, SessionLocal
 from app.core.dependencies import get_current_active_user
 from app.api.v1.expenses.schemas import CreateExpenseRequest, UpdateExpenseRequest
 from app.api.v1.expenses.service import ExpenseService
@@ -12,6 +13,7 @@ from app.api.v1.expenses.sms_parser import sms_parser
 from app.api.v1.expenses.quick_parser import parse_quick_text
 from app.api.v1.expenses.ai_categorizer import suggest_category, learn_keyword
 from app.config import settings
+from app.core.idempotency import get_cached_response, store_response
 from app.utils.response import success
 
 
@@ -47,6 +49,10 @@ class BulkAddRequest(BaseModel):
     items: List[QuickAddItem]
     merchant: Optional[str] = None  # shared across all items, e.g. from a scanned receipt
     source: str = "quick_add"
+    # Client-generated key, stable across retries of the same save action —
+    # lets a retry after a client-side timeout replay the original batch
+    # instead of re-creating every item.
+    idempotency_key: Optional[str] = None
 
 router = APIRouter(tags=["Expenses"])
 service = ExpenseService()
@@ -58,7 +64,12 @@ def create_expense(
     current_user=Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ):
+    cached = get_cached_response(db, str(current_user.id), data.idempotency_key, "expenses.create")
+    if cached is not None:
+        return success(cached, message="Expense created")
+
     expense = service.create(db, str(current_user.id), data)
+    store_response(db, str(current_user.id), data.idempotency_key, "expenses.create", expense)
     return success(expense, message="Expense created")
 
 
@@ -280,6 +291,38 @@ def ai_parse_expenses(
     return success(items, message=f"Parsed {len(items)} item(s)")
 
 
+def _resolve_bulk_category_id(item: QuickAddItem, user_id: str) -> Optional[str]:
+    """Resolve one bulk-create item's category on its own short-lived DB
+    session, so it's safe to call concurrently across items (SQLAlchemy
+    sessions aren't thread-safe to share). Mirrors the same exact-name-match
+    → AI-categorizer fallback that used to run inline in the request's own
+    session."""
+    if item.category_id:
+        # Caller already resolved/overrode the category (e.g. user manually
+        # corrected it before saving) — skip the name lookup entirely.
+        return item.category_id
+
+    from app.models.category import Category
+
+    session = SessionLocal()
+    try:
+        cat = (
+            session.query(Category)
+            .filter(
+                Category.user_id == user_id,
+                Category.name.ilike(f'%{item.category_name}%'),
+            )
+            .first()
+        )
+        if cat:
+            return str(cat.id)
+
+        suggestion = suggest_category(item.description, user_id, session)
+        return suggestion.get("category_id")
+    finally:
+        session.close()
+
+
 @router.post("/bulk-create")
 def bulk_create_expenses(
     request: BulkAddRequest,
@@ -287,30 +330,33 @@ def bulk_create_expenses(
     db: Session = Depends(get_db),
 ):
     """Create multiple expenses at once from quick-add."""
-    from app.models.category import Category
+    cached = get_cached_response(
+        db, str(current_user.id), request.idempotency_key, "expenses.bulk_create"
+    )
+    if cached is not None:
+        return success(cached, message=f"Created {len(cached)} expense(s)")
 
     created = []
     today = date_type.today()
 
-    for item in request.items:
-        if item.category_id:
-            # Caller already resolved/overrode the category (e.g. user manually
-            # corrected it before saving) — skip the name lookup entirely.
-            category_id = item.category_id
-        else:
-            # Try exact name match first, then AI-based multilingual match
-            cat = db.query(Category).filter(
-                Category.user_id == current_user.id,
-                Category.name.ilike(f'%{item.category_name}%'),
-            ).first()
+    # Category resolution can fall through to a Groq LLM call per item (up to
+    # ~8s each — see ai_categorizer.py) when there's no keyword match. Doing
+    # that sequentially for, say, an 8-item receipt meant up to ~64s before
+    # any expense was even inserted — well past the client's save timeout,
+    # which is exactly what caused the timeout+duplicate bug this endpoint
+    # now also guards against via idempotency_key above. Resolving all items
+    # concurrently turns that worst case into roughly one LLM round trip's
+    # worth of wall-clock time. Each worker gets its own short-lived DB
+    # session (SQLAlchemy sessions aren't safe to share across threads) — the
+    # request's own `db` session is only touched afterward, sequentially, for
+    # the actual (fast) inserts.
+    with ThreadPoolExecutor(max_workers=min(len(request.items), 6) or 1) as pool:
+        category_ids = list(pool.map(
+            lambda item: _resolve_bulk_category_id(item, str(current_user.id)),
+            request.items,
+        ))
 
-            category_id = str(cat.id) if cat else None
-
-            if not category_id:
-                # Use AI categorizer to match description to user's real categories
-                suggestion = suggest_category(item.description, str(current_user.id), db)
-                category_id = suggestion.get("category_id")
-
+    for item, category_id in zip(request.items, category_ids):
         data = CreateExpenseRequest(
             amount=item.amount,
             description=item.description,
@@ -324,6 +370,9 @@ def bulk_create_expenses(
         expense = service.create(db, str(current_user.id), data)
         created.append(expense)
 
+    store_response(
+        db, str(current_user.id), request.idempotency_key, "expenses.bulk_create", created
+    )
     return success(created, message=f"Created {len(created)} expense(s)")
 
 
