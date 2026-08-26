@@ -62,20 +62,14 @@ class BudgetService:
     def create(self, db: Session, user_id: str, data: CreateBudgetRequest) -> dict:
         family_group_id = None
         if data.is_shared:
-            from app.models.family_group import FamilyGroup, FamilyGroupMember
-            from app.models.user import User
-            group = db.query(FamilyGroup).filter(FamilyGroup.created_by == user_id).first()
-            if not group:
-                user = db.query(User).filter(User.id == user_id).first()
-                if user and user.phone:
-                    member = db.query(FamilyGroupMember).filter(
-                        FamilyGroupMember.phone == user.phone,
-                        FamilyGroupMember.status == "accepted",
-                    ).first()
-                    if member:
-                        group = db.query(FamilyGroup).filter(FamilyGroup.id == member.group_id).first()
-            if group:
-                family_group_id = str(group.id)
+            # Reuse the family service's group resolution (handles the
+            # phone-format inconsistencies and admin-vs-joined-member
+            # priority correctly) instead of a separate, easily-drifting
+            # copy — and auto-creates a group if the user has none yet, so a
+            # shared budget can never end up orphaned with no family_group_id.
+            from app.api.v1.family.service import FamilyService
+            group = FamilyService().get_or_create_user_group(db, user_id)
+            family_group_id = str(group.id)
 
         # Budgets attach only to main categories — snap any sub/leaf up to its root
         category_id = data.category_id

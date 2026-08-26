@@ -202,33 +202,43 @@ class FamilyService:
             return None
         return _group_to_dict(group, get_group_month_start_day(db, group.id))
 
-    def invite_member(self, db: Session, user_id: str, data: InviteMemberRequest) -> dict:
+    def get_or_create_user_group(self, db: Session, user_id: str) -> FamilyGroup:
+        """The user's family group (as admin or accepted member elsewhere),
+        auto-creating a default solo one if they don't belong to any yet —
+        e.g. the first time they invite someone, or mark something "shared"
+        before ever setting up a family. Never returns None, so callers can't
+        accidentally leave something is_shared=True with no group attached."""
         group = self._get_user_group(db, user_id)
-        if not group:
-            # Auto-create a default group so the user can invite straight away
-            user = db.query(User).filter(User.id == user_id).first()
-            group_name = f"{user.name}'s Family" if user and user.name else "My Family"
-            group = FamilyGroup(
-                name=group_name,
-                created_by=user_id,
-                month_start_day=self._creator_cycle_start_day(db, user_id),
-            )
-            db.add(group)
-            db.flush()
-            db.add(FamilyGroupMember(
-                group_id=str(group.id),
-                user_id=user_id,
-                phone=(user.phone if user else "") or "",
-                name=user.name if user else None,
-                role="admin",
-                status="accepted",
-                joined_at=datetime.utcnow(),
-            ))
-            db.flush()
+        if group:
+            return group
 
-            # Seed the shared family category tree for the newly auto-created group
-            from app.api.v1.categories.default_tree import seed_category_tree
-            seed_category_tree(db, user_id=user_id, family_group_id=str(group.id))
+        user = db.query(User).filter(User.id == user_id).first()
+        group_name = f"{user.name}'s Family" if user and user.name else "My Family"
+        group = FamilyGroup(
+            name=group_name,
+            created_by=user_id,
+            month_start_day=self._creator_cycle_start_day(db, user_id),
+        )
+        db.add(group)
+        db.flush()
+        db.add(FamilyGroupMember(
+            group_id=str(group.id),
+            user_id=user_id,
+            phone=(user.phone if user else "") or "",
+            name=user.name if user else None,
+            role="admin",
+            status="accepted",
+            joined_at=datetime.utcnow(),
+        ))
+        db.flush()
+
+        # Seed the shared family category tree for the newly auto-created group
+        from app.api.v1.categories.default_tree import seed_category_tree
+        seed_category_tree(db, user_id=user_id, family_group_id=str(group.id))
+        return group
+
+    def invite_member(self, db: Session, user_id: str, data: InviteMemberRequest) -> dict:
+        group = self.get_or_create_user_group(db, user_id)
 
         # ── Validation: can't invite your own number ──────────────────────
         inviter = db.query(User).filter(User.id == user_id).first()
