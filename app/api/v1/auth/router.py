@@ -120,6 +120,7 @@ def send_otp(data: ResendOTPRequest, request: Request, db: Session = Depends(get
         pref = UserPreference(user_id=user.id)
         db.add(pref)
         db.commit()
+        service._seed_personal_categories(db, str(user.id))
 
     try:
         service.send_otp(data.phone, db)

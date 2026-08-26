@@ -51,6 +51,18 @@ def apply_schema_patches():
         "ALTER TABLE categories ADD COLUMN IF NOT EXISTS family_group_id UUID",
         "CREATE INDEX IF NOT EXISTS ix_categories_family_group_id "
         "ON categories (family_group_id)",
+        # categories.user_id/parent_id and category_keywords.category_id/keyword
+        # were never indexed (not even in create_all() — no model-level
+        # index=True existed until now, and the matching Alembic migrations
+        # never applied to prod). Every categorizer lookup is scoped by one
+        # of these columns, so without indexes those are full table scans
+        # that get worse as tenants grow — see PR that added this comment.
+        "CREATE INDEX IF NOT EXISTS ix_categories_user_id ON categories (user_id)",
+        "CREATE INDEX IF NOT EXISTS ix_categories_parent_id ON categories (parent_id)",
+        "CREATE INDEX IF NOT EXISTS ix_category_keywords_category_id "
+        "ON category_keywords (category_id)",
+        "CREATE INDEX IF NOT EXISTS ix_category_keywords_keyword "
+        "ON category_keywords (keyword)",
         "ALTER TABLE user_preferences ADD COLUMN IF NOT EXISTS "
         "month_start_day SMALLINT DEFAULT 1",
         # Family-group-wide financial cycle start day (mirrors the per-user

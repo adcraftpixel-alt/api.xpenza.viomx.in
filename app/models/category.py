@@ -10,12 +10,12 @@ class Category(Base):
     __tablename__ = "categories"
 
     id         = Column(UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid.uuid4()))
-    user_id    = Column(UUID(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    user_id    = Column(UUID(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     # Set => this category belongs to a shared family tree; NULL => personal category
     family_group_id = Column(
-        UUID(as_uuid=False), ForeignKey("family_groups.id", ondelete="CASCADE"), nullable=True
+        UUID(as_uuid=False), ForeignKey("family_groups.id", ondelete="CASCADE"), nullable=True, index=True
     )
-    parent_id  = Column(UUID(as_uuid=False), ForeignKey("categories.id", ondelete="CASCADE"), nullable=True)
+    parent_id  = Column(UUID(as_uuid=False), ForeignKey("categories.id", ondelete="CASCADE"), nullable=True, index=True)
     name       = Column(String(100), nullable=False)
     icon       = Column(String(100), nullable=True)
     color      = Column(String(20),  nullable=True)

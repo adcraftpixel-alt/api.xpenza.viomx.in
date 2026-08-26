@@ -23,9 +23,9 @@ class CategoryKeyword(Base):
 
     id          = Column(UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid.uuid4()))
     category_id = Column(
-        UUID(as_uuid=False), ForeignKey("categories.id", ondelete="CASCADE"), nullable=False
+        UUID(as_uuid=False), ForeignKey("categories.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    keyword     = Column(String(100), nullable=False)  # stored lowercase, normalized
+    keyword     = Column(String(100), nullable=False, index=True)  # stored lowercase, normalized
     lang        = Column(String(10), nullable=True)     # en | hi | pa | ... (informational)
     source      = Column(String(20), nullable=False, default="seed")  # seed | learned | admin
     created_at  = Column(DateTime, default=datetime.utcnow, nullable=False)

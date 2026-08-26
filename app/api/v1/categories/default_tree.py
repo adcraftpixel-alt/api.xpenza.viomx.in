@@ -263,6 +263,15 @@ DEFAULT_TREE: list[dict] = [
              "keywords": ["tour package", "goibibo", "makemytrip", "holiday package"]},
         ],
     },
+    {
+        # Root-level safety net: ai_categorizer.suggest_category() falls back
+        # to a category literally named "General" when keyword match AND the
+        # LLM both fail — without this node that fallback query returns
+        # nothing and the expense is saved with category_id=None.
+        "name": "General", "icon": "🧾", "color": "#6B7280",
+        "keywords": ["other", "others", "miscellaneous", "misc", "general"],
+        "children": [],
+    },
 ]
 
 

@@ -320,6 +320,7 @@ class AuthService:
         db.add(pref)
         db.commit()
         db.refresh(user)
+        self._seed_personal_categories(db, str(user.id))
 
         if data.phone:
             try:
@@ -328,6 +329,16 @@ class AuthService:
                 logger.warning(f"OTP send failed: {e}")
 
         return user
+
+    def _seed_personal_categories(self, db: Session, user_id: str) -> None:
+        """Seed the default category tree for a brand-new user so expenses
+        always have somewhere real to land, even before onboarding finishes.
+        Best-effort: a seeding failure must never block registration/login."""
+        try:
+            from app.api.v1.categories.default_tree import seed_category_tree
+            seed_category_tree(db, user_id=user_id, family_group_id=None)
+        except Exception as e:
+            logger.warning(f"Default category seeding failed for {user_id}: {e}")
 
     def login(self, db: Session, data: LoginRequest) -> TokenResponse:
         identifier = data.get_identifier()
@@ -382,6 +393,7 @@ class AuthService:
         db.add(pref)
         db.commit()
         db.refresh(user)
+        self._seed_personal_categories(db, str(user.id))
 
         try:
             self.send_otp(data.phone, db)
@@ -564,6 +576,7 @@ class AuthService:
             db.add(user)
             db.flush()
             db.add(UserPreference(user_id=user.id))
+            self._seed_personal_categories(db, str(user.id))
             logger.info(f"New user created via Firebase phone auth: {phone_e164}")
         else:
             if not user.is_active:
