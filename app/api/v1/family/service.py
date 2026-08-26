@@ -219,30 +219,37 @@ class FamilyService:
                 _same_phone(inviter.phone, data.phone):
             raise BadRequestError("You can't invite your own number")
 
+        # Phone numbers are stored in inconsistent formats across the app
+        # (bare 10-digit vs +91 E.164 — see auth/service.py:normalize_phone),
+        # so every lookup below has to tolerate all the legacy spellings.
+        from app.api.v1.auth.service import (
+            _find_user_by_phone, _phone_lookup_candidates, normalize_phone,
+        )
+
         # ── Already invited / member ──────────────────────────────────────
         existing = db.query(FamilyGroupMember).filter(
             FamilyGroupMember.group_id == str(group.id),
-            FamilyGroupMember.phone == data.phone,
+            FamilyGroupMember.phone.in_(_phone_lookup_candidates(data.phone)),
         ).first()
         if existing:
             if existing.status == "accepted":
                 raise BadRequestError("This number is already a member")
             # Still pending → treat as a re-send (re-notify the invitee)
-            linked = db.query(User).filter(User.phone == data.phone).first()
+            linked = _find_user_by_phone(db, data.phone)
             if linked:
                 self._notify_invitee(db, linked, group, user_id)
             return _member_to_dict(existing)
 
         member = FamilyGroupMember(
             group_id=str(group.id),
-            phone=data.phone,
+            phone=normalize_phone(data.phone),
             name=data.name,
             role="member",
             status="pending",
             invited_by=user_id,
         )
         # Auto-link if user with this phone already exists
-        linked_user = db.query(User).filter(User.phone == data.phone).first()
+        linked_user = _find_user_by_phone(db, data.phone)
         if linked_user:
             member.user_id = str(linked_user.id)
             member.name = member.name or linked_user.name
@@ -298,6 +305,44 @@ class FamilyService:
         except Exception:
             pass
 
+    def _notify_inviter_joined(self, db: Session, member: FamilyGroupMember,
+                               invitee: User) -> None:
+        """Create an in-app notification + push telling the inviter their
+        invite was accepted, so they don't have to manually refresh to find out."""
+        title = "Family invite accepted"
+        body = f"{member.name or invitee.name or 'Someone'} joined your family group"
+
+        try:
+            from app.models.notification import Notification
+            db.add(Notification(
+                user_id=str(member.invited_by),
+                title=title,
+                body=body,
+                type="family_join",
+                is_read=False,
+                data={"group_id": str(member.group_id), "member_id": str(member.id)},
+            ))
+            db.commit()
+        except Exception:
+            db.rollback()
+
+        try:
+            from app.models.device_token import UserDeviceToken
+            from app.utils.fcm import send_push_notification
+            tokens = db.query(UserDeviceToken).filter(
+                UserDeviceToken.user_id == str(member.invited_by)
+            ).all()
+            for t in tokens:
+                send_push_notification(
+                    device_token=t.device_token,
+                    title=title,
+                    body=body,
+                    data={"group_id": str(member.group_id)},
+                    notification_type="family_join",
+                )
+        except Exception:
+            pass
+
     def get_members(self, db: Session, user_id: str) -> List[dict]:
         group = self._get_user_group(db, user_id)
         if not group:
@@ -305,10 +350,14 @@ class FamilyService:
         return [_member_to_dict(m) for m in group.members]
 
     def accept_invite(self, db: Session, user_id: str, group_id: str) -> dict:
+        from app.api.v1.auth.service import _phone_lookup_candidates
+
         user = db.query(User).filter(User.id == user_id).first()
+        if not user or not user.phone:
+            raise NotFoundError("Invite not found")
         member = db.query(FamilyGroupMember).filter(
             FamilyGroupMember.group_id == group_id,
-            FamilyGroupMember.phone == (user.phone or ""),
+            FamilyGroupMember.phone.in_(_phone_lookup_candidates(user.phone)),
             FamilyGroupMember.status == "pending",
         ).first()
         if not member:
@@ -323,15 +372,22 @@ class FamilyService:
             member.contribution = float(user.monthly_income)
         db.commit()
         db.refresh(member)
+
+        # Let the inviter know their invite was accepted
+        if member.invited_by:
+            self._notify_inviter_joined(db, member, user)
+
         return _member_to_dict(member)
 
     def get_pending_invites(self, db: Session, user_id: str) -> List[dict]:
         """Return pending invites for the current user's phone."""
+        from app.api.v1.auth.service import _phone_lookup_candidates
+
         user = db.query(User).filter(User.id == user_id).first()
         if not user or not user.phone:
             return []
         members = db.query(FamilyGroupMember).filter(
-            FamilyGroupMember.phone == user.phone,
+            FamilyGroupMember.phone.in_(_phone_lookup_candidates(user.phone)),
             FamilyGroupMember.status == "pending",
         ).all()
         return [
