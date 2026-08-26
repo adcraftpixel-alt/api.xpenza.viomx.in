@@ -74,6 +74,16 @@ def set_contribution(
     return success(member, message="Contribution updated")
 
 
+@router.delete("/invite/{member_id}")
+def cancel_invite(
+    member_id: str,
+    current_user=Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    service.cancel_invite(db, str(current_user.id), member_id)
+    return success(None, message="Invite cancelled")
+
+
 @router.get("/invites/pending")
 def get_pending_invites(
     current_user=Depends(get_current_active_user),

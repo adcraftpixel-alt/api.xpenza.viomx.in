@@ -379,6 +379,28 @@ class FamilyService:
 
         return _member_to_dict(member)
 
+    def cancel_invite(self, db: Session, user_id: str, member_id: str) -> None:
+        """Withdraws a pending invite. Only the group admin or the person who
+        sent that specific invite may cancel it."""
+        group = self._get_user_group(db, user_id)
+        if not group:
+            raise NotFoundError("No family group")
+
+        member = db.query(FamilyGroupMember).filter(
+            FamilyGroupMember.id == member_id,
+            FamilyGroupMember.group_id == str(group.id),
+            FamilyGroupMember.status == "pending",
+        ).first()
+        if not member:
+            raise NotFoundError("Invite not found")
+
+        if not self._is_group_admin(db, group, user_id) and \
+                str(member.invited_by) != str(user_id):
+            raise ForbiddenError("You can't cancel this invite")
+
+        db.delete(member)
+        db.commit()
+
     def get_pending_invites(self, db: Session, user_id: str) -> List[dict]:
         """Return pending invites for the current user's phone."""
         from app.api.v1.auth.service import _phone_lookup_candidates
