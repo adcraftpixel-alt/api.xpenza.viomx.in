@@ -102,10 +102,14 @@ class FamilyService:
         """
         user = db.query(User).filter(User.id == user_id).first()
         if user and user.phone:
+            # Phone numbers are stored in inconsistent formats across the app
+            # (bare 10-digit vs +91 E.164 — see auth/service.py:normalize_phone),
+            # so match on every known spelling rather than an exact string.
+            from app.api.v1.auth.service import _phone_lookup_candidates
             member = db.query(FamilyGroupMember).join(
                 FamilyGroup, FamilyGroup.id == FamilyGroupMember.group_id
             ).filter(
-                FamilyGroupMember.phone == user.phone,
+                FamilyGroupMember.phone.in_(_phone_lookup_candidates(user.phone)),
                 FamilyGroupMember.status == "accepted",
                 FamilyGroup.created_by != user_id,
             ).first()
