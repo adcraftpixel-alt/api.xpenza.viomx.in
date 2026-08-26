@@ -327,7 +327,7 @@ class FamilyService:
         """Create an in-app notification + push telling the inviter their
         invite was accepted, so they don't have to manually refresh to find out."""
         title = "Family invite accepted"
-        body = f"{member.name or invitee.name or 'Someone'} joined your family group"
+        body = f"{invitee.name or member.name or 'Someone'} joined your family group"
 
         try:
             from app.models.notification import Notification
@@ -474,9 +474,11 @@ class FamilyService:
             Expense.expense_date <= period_end,
         ).order_by(Expense.expense_date.desc()).all()
 
-        # Display name helper — appends "(Me)" for the requesting user
+        # Display name helper — appends "(Me)" for the requesting user.
+        # Prefer the linked account's live profile name over the point-in-time
+        # snapshot on the member row (see _member_to_dict for why).
         def display_name(m) -> str:
-            base = m.name or (m.user.name if m.user else "Member")
+            base = (m.user.name if m.user else None) or m.name or "Member"
             if m.user_id and str(m.user_id) == str(user_id):
                 return f"{base} (Me)"
             return base
@@ -603,7 +605,8 @@ class FamilyService:
                 spent = float(q.scalar() or 0)
                 if spent > 0:
                     member = next((m for m in group.members if str(m.user_id) == uid), None)
-                    name = member.name or (member.user.name if member and member.user else uid)
+                    name = (member.user.name if member and member.user else None) \
+                        or (member.name if member else None) or uid
                     member_spent[name] = spent
 
             result.append(_budget_to_dict(b, member_spent))
