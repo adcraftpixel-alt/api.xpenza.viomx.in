@@ -19,10 +19,15 @@ def _same_phone(a: str, b: str) -> bool:
 
 
 def _member_to_dict(m: FamilyGroupMember) -> dict:
+    # Once linked to a real account, always show their current live profile
+    # name — the stored `m.name` is just a point-in-time snapshot (often the
+    # phone-number placeholder from before they set a real name) and goes
+    # stale the moment the member updates their profile. Fall back to the
+    # stored name only for not-yet-linked invitees (no account to read from).
     return {
         "id": str(m.id),
         "phone": m.phone,
-        "name": m.name or (m.user.name if m.user else None),
+        "name": (m.user.name if m.user else None) or m.name,
         "role": m.role,
         "status": m.status,
         "user_id": str(m.user_id) if m.user_id else None,
@@ -86,21 +91,29 @@ def _budget_to_dict(b: Budget, member_spent: Optional[dict] = None) -> dict:
 class FamilyService:
 
     def _get_user_group(self, db: Session, user_id: str) -> Optional[FamilyGroup]:
-        """Returns the family group the user belongs to (as admin or accepted member)."""
-        # Check if user created a group
-        group = db.query(FamilyGroup).filter(FamilyGroup.created_by == user_id).first()
-        if group:
-            return group
-        # Check if user is an accepted member
+        """Returns the family group the user belongs to (as admin or accepted member).
+
+        A user can end up admin of their own (possibly solo/vestigial) group —
+        e.g. auto-created the first time they tried to invite someone — and
+        later separately accept an invite into a DIFFERENT family. When both
+        exist, the family they explicitly joined is the one they actually care
+        about, so an accepted membership elsewhere takes priority over a group
+        they merely created themselves.
+        """
         user = db.query(User).filter(User.id == user_id).first()
         if user and user.phone:
-            member = db.query(FamilyGroupMember).filter(
+            member = db.query(FamilyGroupMember).join(
+                FamilyGroup, FamilyGroup.id == FamilyGroupMember.group_id
+            ).filter(
                 FamilyGroupMember.phone == user.phone,
                 FamilyGroupMember.status == "accepted",
+                FamilyGroup.created_by != user_id,
             ).first()
             if member:
                 return db.query(FamilyGroup).filter(FamilyGroup.id == member.group_id).first()
-        return None
+        # No membership in another family — fall back to a group they created.
+        group = db.query(FamilyGroup).filter(FamilyGroup.created_by == user_id).first()
+        return group
 
     def _is_group_admin(self, db: Session, group: FamilyGroup, user_id: str) -> bool:
         """Whether the user may change group-wide settings (creator or an
