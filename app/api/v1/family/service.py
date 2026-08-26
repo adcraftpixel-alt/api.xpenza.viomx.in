@@ -1,6 +1,7 @@
 from datetime import datetime
 from typing import Optional, List
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 
 from app.models.family_group import FamilyGroup, FamilyGroupMember
 from app.models.expense import Expense
@@ -577,7 +578,33 @@ class FamilyService:
             raise ForbiddenError(
                 "Each member can only edit their own income")
 
-        member.contribution = max(0.0, amount)
+        amount = max(0.0, amount)
+
+        # Can't commit more to the family pool than salary actually leaves
+        # room for: contribution is capped at monthly_income minus whatever
+        # personal (non-family) expenses you've already logged this cycle.
+        user = db.query(User).filter(User.id == user_id).first()
+        if user and user.monthly_income:
+            from app.utils.period import current_period_window
+            win_start, win_end = current_period_window(db, user_id)
+            personal_spent = float(
+                db.query(func.sum(Expense.amount)).filter(
+                    Expense.user_id == user_id,
+                    Expense.family_group_id.is_(None),
+                    Expense.expense_date >= win_start,
+                    Expense.expense_date <= win_end,
+                ).scalar() or 0
+            )
+            available = max(0.0, float(user.monthly_income) - personal_spent)
+            if amount > available:
+                raise BadRequestError(
+                    f"You've already spent ₹{personal_spent:,.0f} of your "
+                    f"₹{float(user.monthly_income):,.0f} salary on personal "
+                    f"expenses this month — the most you can commit to the "
+                    f"family pool right now is ₹{available:,.0f}."
+                )
+
+        member.contribution = amount
         db.commit()
         db.refresh(member)
         return _member_to_dict(member)
